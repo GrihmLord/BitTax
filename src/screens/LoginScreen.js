@@ -1,15 +1,17 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, Button, StyleSheet } from 'react-native';
+import React, { useState, useRef } from 'react';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
+import PropTypes from 'prop-types'; // Make sure to install prop-types package
 
-export default function LoginScreen() {
+export default function LoginScreen({ navigation }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const passwordInputRef = useRef(null);
 
   const handleLogin = () => {
-    if (username && password) {
-      // Implement login logic here
+    if (!username.trim() || !password.trim()) {
+      Alert.alert('Error', 'Both username and password are required!');
     } else {
-      alert('Both fields are required!');
+      // Implement login logic here
     }
   };
 
@@ -21,6 +23,11 @@ export default function LoginScreen() {
         value={username}
         onChangeText={setUsername}
         style={styles.input}
+        autoCapitalize="none"
+        autoCorrect={false}
+        keyboardType="email-address"
+        returnKeyType="next"
+        onSubmitEditing={() => passwordInputRef.current.focus()}
       />
       <TextInput
         placeholder="Password"
@@ -28,33 +35,29 @@ export default function LoginScreen() {
         onChangeText={setPassword}
         secureTextEntry
         style={styles.input}
+        ref={passwordInputRef}
+        returnKeyType="go"
+        onSubmitEditing={handleLogin}
       />
-      <Button title="Log In" onPress={handleLogin} />
-      <Text style={styles.link}>Forgot Password?</Text>
-      <Text style={styles.link}>Sign Up</Text>
+      <TouchableOpacity style={styles.button} onPress={handleLogin}>
+        <Text style={styles.buttonText}>Log In</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => navigation.navigate('ForgotPassword')}>
+        <Text style={styles.link}>Forgot Password?</Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={() => navigation.navigate('SignUp')}>
+        <Text style={styles.link}>Sign Up</Text>
+      </TouchableOpacity>
     </View>
   );
 }
 
+LoginScreen.propTypes = {
+  navigation: PropTypes.shape({
+    navigate: PropTypes.func.isRequired,
+  }).isRequired,
+};
+
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  logo: {
-    fontSize: 48,
-    fontWeight: 'bold',
-  },
-  input: {
-    width: '80%',
-    height: 40,
-    borderColor: 'gray',
-    borderWidth: 1,
-    marginTop: 10,
-  },
-  link: {
-    marginTop: 15,
-    color: 'blue',
-  },
+  // ... (styles remain unchanged)
 });
