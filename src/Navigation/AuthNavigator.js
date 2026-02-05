@@ -1,6 +1,8 @@
 import React from 'react';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import LoginScreen from '../screens/LoginScreen';
+import HomeScreen from '../screens/HomeScreen';
+import AuditScreen from '../screens/AuditScreen';
 
 const Stack = createStackNavigator();
 
@@ -15,7 +17,8 @@ const AuthNavigator = () => (
   >
     <Stack.Screen name="Login" component={LoginScreen} />
     {/* The HomeScreen is typically not part of the Auth flow, so it's commented out */}
-    {/* <Stack.Screen name="Home" component={HomeScreen} /> */}
+    <Stack.Screen name="Home" component={HomeScreen} />
+    <Stack.Screen name="Audit" component={AuditScreen} />
   </Stack.Navigator>
 );
 

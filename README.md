@@ -1,106 +1,77 @@
-# BitTax 🌐💰
+# BitTax: Cold Storage Audit Tool (Desktop)
 
-## Executive Summary 📄
+**BitTax** is a privacy-focused, local-first desktop application designed to audit cryptocurrency cold storage wallets for tax compliance and verification.
 
-BitTax revolutionizes the tax payment landscape by leveraging blockchain technology to offer a secure and streamlined experience. Designed for both individuals and businesses, BitTax provides a transparent platform to manage tax obligations with ease.
+> [!WARNING]
+> **Public Repository Safety Notice**: This is an open-source tool.
+> *   **Do NOT commit your real XPUBs or Private Keys** to any file in this repository.
+> *   The "Demo Profile" uses completely mock data.
+> *   All processing happens locally on your machine. Your keys are never sent to any external server.
 
-## Badges
+## 🚀 Features
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
-![License](https://img.shields.io/badge/license-MIT-blue)
-![Bitcoin Enabled](https://img.shields.io/badge/bitcoin-enabled-orange)
+### 🛡️ Local & Private
+*   **Offline First**: Designed to run without internet for maximum security.
+*   **Non-Custodial**: You retain full control. No generic "cloud account" required.
+*   **XPUB Audit**: Audits based on Extended Public Keys (XPUB), ensuring your Private Keys remain offline.
 
-## Table of Contents
+### 💰 Advanced Tax Logic
+*   **Capital Gains**: Automatically calculates Short/Long term gains.
+*   **Cost Basis Methods**:
+    *   **FIFO** (First In, First Out) - Default/IRS Standard.
+    *   **LIFO** (Last In, First Out).
+    *   **HIFO** (Highest In, First Out) - Best for tax minimization.
+*   **Wash Sale Detection**: Automatically flags and disallows losses if assets are repurchased within 30 days (IRS 30-day rule).
 
-- [Introduction](#introduction)
-- [Features](#features)
-  - [Current Features](#current-features)
-  - [Upcoming Features](#upcoming-features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Technology Stack](#technology-stack)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-- [Contact](#contact)
+### 🛡️ Personal Audit Suite (New)
+*   **Portfolio Dashboard**: Real-time view of Net Worth, Unrealized Gains (ROI), and Asset Allocation.
+*   **UTXO Manager (Coin Control)**:
+    *   **Visualize**: See every unspent chunk of Bitcoin you own.
+    *   **Freeze**: "Lock" specific UTXOs to prevent them from being spent (simulated privacy protection).
+    *   **Label**: Add notes to specific UTXOs (e.g., "KYC-Free", "Do Not Spend").
+*   **Transaction Labeling**: Annotate your history with persistent notes (e.g., "Gift", "Mining").
 
-## Introduction
+### 📊 Multi-Asset Support
+*   **Bitcoin (BTC)**: Full UTXO audit support.
+*   **Ethereum (ETH)**: Account-based model support.
+*   **Privacy Detections**:
+    *   **CoinJoin/Mixers**: Flags transactions with high anonymity sets.
+    *   **Lightning Network**: Detects potential off-chain channel opens.
 
-BitTax is a cutting-edge application that simplifies the complexities of tax payments. Our mission is to provide a user-friendly interface for tax management while ensuring the highest security standards through blockchain technology.
+### 📂 Reporting
+*   **CSV Export**: Generates `bittax_audit_8949.csv` formatted for IRS Form 8949 / Tax Software import.
 
-## Features
+## 🛠️Tech Stack
 
-### Current Features
+*   **Runtime**: Electron (Windows/Mac/Linux)
+*   **Frontend**: HTML5, CSS3 (Vanilla), JavaScript
+*   **Architecture**: Local-First, Zero-Dependency Core Logic
 
-- **Tax Obligation Overview**: Instantly view your due taxes.
-- **Secure Authentication**: Protect your financial data with robust login mechanisms.
+## � Installation & Usage
 
-### Upcoming Features
+### 1. Run from Source
+```bash
+# Install dependencies
+npm install
 
-- **Bitcoin Payments**: Seamlessly pay taxes using Bitcoin.
-- **Direct IRS Integration**: Access real-time tax data.
-- **Advanced Security**: Implement multi-factor authentication for enhanced protection.
-- **Payment History**: Easily review past Bitcoin tax payments.
+# Run Desktop App
+npm run electron
+```
 
-## Installation
+### 2. Build Installer (Windows)
+```bash
+npm run dist
+```
+This will generate a `.exe` installer in the `dist/` folder.
 
-### Prerequisites
+## 🧪 Verification
+The most effective way to verify the logic is using the **Desktop App's Demo Mode**:
 
-- Node.js (v12.x or higher)
-- npm (v6.x or higher) or yarn (v1.22 or higher)
-- Expo CLI (for React Native development)
-- Android/iOS simulator or a physical device
+1.  Run `npm run electron`
+2.  Click **"Running a test? Load Demo Profile"** at the bottom.
+3.  Explore the **Dashboard**, **Audit**, and **UTXO Manager** tabs.
+4.  Verify calculations (FIFO/LIFO/HIFO), Wash Sales, and Privacy Flags against the provided Mock Data.
 
-### Setup
+***
 
-1. Clone the repository:
-
-    ```bash
-    git clone https://github.com/yourusername/BitTax.git
-    cd BitTax
-    ```
-
-1. Install dependencies:
-
-    ```bash
-    npm install
-    # or
-    yarn install
-    ```
-
-1. Start the application:
-
-    ```bash
-    expo start
-    # or, if not using Expo:
-    npm start
-    # or
-    yarn start
-    ```
-
-## Usage
-
-Provide examples of how to use the app or how to perform common tasks. Include code snippets, screenshots, or videos.
-
-## Technology Stack
-
-- **Frontend**: React Native for a native app experience.
-- **Backend**: Node.js for scalable server-side operations.
-- **Blockchain**: Bitcoin integration for secure transactions.
-- **State Management**: Redux for predictable state management (in development).
-
-## Roadmap
-
-Discuss future plans and features that are in the pipeline. This could include a timeline of expected updates.
-
-## Contributing
-
-We welcome contributions! Please see `CONTRIBUTING.md` for how you can contribute to BitTax.
-
-## License
-
-BitTax is available under the MIT License. See `LICENSE.md` for more details.
-
-## Contact
-
-For support, feature requests, or to report a bug, please email us at [support@bittax.com](mailto:support@bittax.com).
+**Disclaimer**: This software is for educational and informational purposes only. It does not constitute professional tax advice. Consult a CPA for your specific situation.

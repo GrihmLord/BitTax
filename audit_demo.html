@@ -1,0 +1,666 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BitTax Audit Tool (Desktop)</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: #f4f6f8;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        }
+
+        h1 {
+            color: #2c3e50;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+
+        .input-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
+        button {
+            padding: 12px 24px;
+            background: #6200ea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #3700b3;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        th,
+        td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+        }
+
+        th {
+            background: #f8f9fa;
+            color: #555;
+            font-weight: 600;
+        }
+
+        .gain {
+            color: #2e7d32;
+            font-weight: bold;
+        }
+
+        .loss {
+            color: #d32f2f;
+            font-weight: bold;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        .stat-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            flex: 1;
+            text-align: center;
+        }
+
+        .stat-val {
+            font-size: 24px;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .tag {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            display: inline-block;
+            margin-left: 5px;
+        }
+
+        .wash-sale {
+            background-color: #ffebee;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+
+        .privacy-risk {
+            background-color: #fff3e0;
+            color: #ef6c00;
+            border: 1px solid #ffe0b2;
+        }
+
+        .ln-channel {
+            background-color: #e3f2fd;
+            color: #1565c0;
+            border: 1px solid #bbdefb;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+        <h1>BitTax Cold Storage Audit</h1>
+        <p>Securely audit your offline wallets using XPUB keys. (FIFO Method)</p>
+
+        <div class="input-group">
+            <select id="assetSelect"
+                style="max-width: 120px; padding: 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff;">
+                <option value="BTC">Bitcoin</option>
+                <option value="ETH">Ethereum</option>
+            </select>
+
+            <input type="text" id="xpubInput" placeholder="Paste your XPUB (BTC) or Address (ETH)...">
+
+            <select id="methodSelect"
+                style="max-width: 100px; padding: 12px; border-radius: 6px; border: 1px solid #ddd; background: #fff;">
+                <option value="FIFO">FIFO</option>
+                <option value="LIFO">LIFO</option>
+                <option value="HIFO">HIFO</option>
+            </select>
+
+            <button onclick="runAudit()">Audit</button>
+            <button onclick="exportCSV()" id="exportBtn"
+                style="display:none; background:#2e7d32; margin-left:10px;">CSV</button>
+        </div>
+
+        <!-- Demo Profile Button -->
+        <div style="text-align: center; margin-bottom: 20px;">
+            <a href="#" onclick="loadDemoProfile()"
+                style="color: #6200ea; text-decoration: none; font-weight: bold; font-size: 14px;">Running a test? Load
+                Demo Profile</a>
+        </div>
+
+        <!-- TABS -->
+        <div style="margin-bottom: 20px; border-bottom: 1px solid #ddd;">
+            <button onclick="switchTab('dashboard')" id="tab-dashboard"
+                style="background:none; color:#6200ea; border-bottom: 2px solid #6200ea; border-radius:0;">Dashboard
+                🏠</button>
+            <button onclick="switchTab('audit')" id="tab-audit"
+                style="background:none; color:#666; border-bottom: 2px solid transparent; border-radius:0;">Audit
+                List</button>
+            <button onclick="switchTab('utxo')" id="tab-utxo"
+                style="background:none; color:#666; border-bottom: 2px solid transparent; border-radius:0;">UTXO Manager
+                🛡️</button>
+        </div>
+
+        <!-- DASHBOARD VIEW -->
+        <div id="view-dashboard">
+            <div class="stats">
+                <div class="stat-box" style="background: #e8f5e9;">
+                    <div class="stat-val" id="db-netWorth">$0.00</div>
+                    <div class="stat-label">Net Worth</div>
+                </div>
+                <div class="stat-box" style="background: #e0f7fa;">
+                    <div class="stat-val" id="db-roi">0%</div>
+                    <div class="stat-label">Total ROI</div>
+                </div>
+                <div class="stat-box" style="background: #fff3e0;">
+                    <div class="stat-val" id="db-unrealized">$0.00</div>
+                    <div class="stat-label">Unrealized Gain</div>
+                </div>
+            </div>
+
+            <div style="display: flex; gap: 20px; margin-top: 20px;">
+                <!-- Allocations -->
+                <div style="flex: 1; background: #f9f9f9; padding: 20px; border-radius: 8px;">
+                    <h3 style="margin-top:0; border-bottom:1px solid #ddd; padding-bottom:10px;">Asset Allocation</h3>
+                    <div id="allocationCheck"
+                        style="height: 150px; display: flex; align-items: center; justify-content: center; color: #999;">
+                        Loading...
+                    </div>
+                </div>
+
+                <!-- Holdings Table -->
+                <div style="flex: 1; background: #f9f9f9; padding: 20px; border-radius: 8px;">
+                    <h3 style="margin-top:0; border-bottom:1px solid #ddd; padding-bottom:10px;">Current Holdings</h3>
+                    <table style="width:100%;">
+                        <thead>
+                            <tr style="background:none;">
+                                <th>Asset</th>
+                                <th>Balance</th>
+                                <th>Value</th>
+                                <th>Alloc %</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- AUDIT VIEW -->
+        <div id="view-audit" style="display:none;">
+            <div class="stats" id="statsContainer" style="display:none;">
+                <div class="stat-box">
+                    <div class="stat-val" id="totalTx">0</div>
+                    <div class="stat-label">Transactions</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="totalGain">$0.00</div>
+                    <div class="stat-label">Realized Gain</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-val" id="taxEst">$0.00</div>
+                    <div class="stat-label">Est. Tax (22%)</div>
+                </div>
+            </div>
+
+            <table id="resultsTable" style="display:none;">
+                <thead>
+                    <tr>
+                        <th>Date Sold</th>
+                        <th>Asset</th>
+                        <th>Proceeds</th>
+                        <th>Cost Basis</th>
+                        <th>Gain/Loss</th>
+                        <th>Notes</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+
+        <!-- UTXO MANAGER VIEW -->
+        <div id="view-utxo" style="display:none;">
+            <div class="stats">
+                <div class="stat-box" style="background: #e3f2fd;">
+                    <div class="stat-val" id="utxoCount">0</div>
+                    <div class="stat-label">Unspent Outputs</div>
+                </div>
+                <div class="stat-box" style="background: #e3f2fd;">
+                    <div class="stat-val" id="utxoValue">$0.00</div>
+                    <div class="stat-label">Current Value</div>
+                </div>
+            </div>
+            <p style="font-size: 13px; color: #666;">Protect your privacy by freezing "Original" UTXOs so they aren't
+                spent as change.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Status</th>
+                        <th>Acquired</th>
+                        <th>Amount</th>
+                        <th>Cost Basis</th>
+                        <th>Label</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody id="utxoBody"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        const MOCK_HISTORY = [
+            { id: 'tx-001', type: 'BUY', date: '2023-01-15', amount: 1.0, price: 21000, fee: 50 },
+            { id: 'tx-002', type: 'SELL', date: '2023-01-20', amount: 1.0, price: 18000, fee: 20 }, // Loss of 3000
+            { id: 'tx-003', type: 'BUY', date: '2023-01-30', amount: 1.0, price: 19000, fee: 30 }, // Triggers Wash Sale (Buy within 30 days)
+            { id: 'tx-004', type: 'SELL', date: '2023-12-05', amount: 0.2, price: 42000, fee: 15 } // Normal Profit
+        ];
+
+        const MOCK_ETH_HISTORY = [
+            { id: 'tx-eth-01', type: 'BUY', date: '2023-01-10', amount: 10.0, price: 1200, fee: 5 },
+            { id: 'tx-eth-02', type: 'SELL', date: '2023-05-15', amount: 5.0, price: 1800, fee: 10 }
+        ];
+
+        // --- LOGIC: FIFO/LIFO/HIFO CALCULATOR ---
+        function calculateGains(history, method = 'FIFO') {
+            let inventory = [];
+            let report = [];
+            let totalGain = 0;
+
+            const sorted = [...history].sort((a, b) => new Date(a.date) - new Date(b.date));
+            // Buys for Wash Sale check
+            const buys = sorted.filter(tx => tx.type === 'BUY').map(tx => ({ ...tx, timestamp: new Date(tx.date).getTime() }));
+
+            for (const tx of sorted) {
+                const fee = tx.fee || 0;
+
+                if (tx.type === 'BUY') {
+                    // Cost per unit includes fee
+                    const totalCost = (tx.amount * tx.price) + fee;
+                    const effectivePrice = totalCost / tx.amount;
+                    // Generate ID for UTXO tracking
+                    const utxoId = `utxo-${tx.date}-${tx.amount}-${inventory.length}`;
+
+                    inventory.push({
+                        id: utxoId,
+                        amount: tx.amount,
+                        price: effectivePrice,
+                        date: tx.date,
+                        timestamp: new Date(tx.date).getTime()
+                    });
+                } else if (tx.type === 'SELL') {
+                    let remaining = tx.amount;
+                    const netSortProceeds = (tx.amount * tx.price) - fee;
+                    const netProceedsPerUnit = netSortProceeds / tx.amount;
+                    const saleTime = new Date(tx.date).getTime();
+
+                    // SORT INVENTORY BASED ON METHOD
+                    if (method === 'LIFO') {
+                        inventory.sort((a, b) => b.timestamp - a.timestamp);
+                    } else if (method === 'HIFO') {
+                        inventory.sort((a, b) => b.price - a.price);
+                    } else {
+                        // FIFO
+                        inventory.sort((a, b) => a.timestamp - b.timestamp);
+                    }
+
+                    while (remaining > 0 && inventory.length > 0) {
+                        const bat = inventory[0];
+                        const take = Math.min(bat.amount, remaining);
+
+                        const basis = take * bat.price;
+                        const proceeds = take * netProceedsPerUnit;
+                        let gain = proceeds - basis;
+                        let wasWashSale = false;
+
+                        // Wash Sale Check
+                        if (gain < 0) {
+                            const thirtyDays = 30 * 24 * 60 * 60 * 1000;
+                            const replacement = buys.find(buy => {
+                                const timeDiff = Math.abs(buy.timestamp - saleTime);
+                                return timeDiff <= thirtyDays && buy.timestamp !== bat.timestamp;
+                            });
+                            if (replacement) { wasWashSale = true; gain = 0; }
+                        }
+
+                        report.push({
+                            id: tx.id, // Pass original TX ID
+                            date: tx.date,
+                            amount: take,
+                            proceeds: proceeds,
+                            basis: basis,
+                            gain: gain,
+                            washSale: wasWashSale,
+                            isCoinJoin: tx.isCoinJoin || false,
+                            isLightning: tx.isLightning || false
+                        });
+
+                        totalGain += gain;
+                        remaining -= take;
+
+                        if (bat.amount > take) {
+                            bat.amount -= take;
+                        } else {
+                            inventory.shift();
+                        }
+                    }
+                }
+            }
+            return { report, totalGain, inventory };
+        }
+
+        function loadDemoProfile() {
+            document.getElementById('assetSelect').value = 'BTC';
+            document.getElementById('xpubInput').value = 'xpub6CUGRUonZSQ4cisLCpxXVHhAF... (DEMO)';
+            runAudit(true);
+            switchTab('dashboard'); // Auto-open dashboard for impact
+        }
+
+        let currentReport = []; // Store for export
+
+        let utxoState = {};
+        let txState = {}; // Store for Tx Notes
+
+        // --- UI HANDLERS ---
+        function runAudit(isDemo = false) {
+            const asset = document.getElementById('assetSelect').value;
+            const method = document.getElementById('methodSelect').value;
+            const xpub = document.getElementById('xpubInput').value;
+
+            if (!isDemo && (!xpub || xpub.length < 5)) return alert('Please enter a valid key/address');
+
+            let historyToUse = asset === 'ETH' ? MOCK_ETH_HISTORY : MOCK_HISTORY;
+
+            if (isDemo && asset === 'BTC') {
+                historyToUse = [
+                    ...MOCK_HISTORY,
+                    { id: 'tx-demo-01', type: 'SELL', date: '2023-08-01', amount: 0.1, price: 30000, fee: 5, isCoinJoin: true },
+                    { id: 'tx-demo-02', type: 'BUY', date: '2023-09-01', amount: 0.5, price: 26000, fee: 100, isLightning: true }
+                ];
+            }
+
+            const { report, totalGain, inventory } = calculateGains(historyToUse, method);
+            currentReport = report;
+
+            // Update Audit View
+            const currency = asset === 'BTC' ? 'BTC' : 'ETH';
+            document.getElementById('statsContainer').style.display = 'flex';
+            document.getElementById('totalTx').innerText = report.length + ' Disposals';
+            document.getElementById('totalGain').innerText = formatMoney(totalGain);
+            document.getElementById('taxEst').innerText = formatMoney(totalGain * 0.22);
+
+            const tbody = document.getElementById('tableBody');
+            tbody.innerHTML = '';
+            report.forEach(row => {
+                // ... (Existing Row Render) ...
+                const tr = document.createElement('tr');
+                const gainClass = row.gain >= 0 ? 'gain' : 'loss';
+
+                let tag = '';
+                if (row.washSale) tag = '<span class="tag wash-sale">WASH SALE</span>';
+                if (row.isCoinJoin) tag += ' <span class="tag privacy-risk">COINJOIN</span>';
+                if (row.isLightning) tag += ' <span class="tag ln-channel">LN CHANNEL</span>';
+
+                const gainText = row.washSale ? tag : `${formatMoney(row.gain)} ${tag}`;
+
+                // Get saved note
+                const note = txState[row.id] || '';
+
+                tr.innerHTML = `
+                <td>${row.date}</td>
+                <td>${row.amount.toFixed(4)} ${currency}</td>
+                <td>${formatMoney(row.proceeds)}</td>
+                <td>${formatMoney(row.basis)}</td>
+                <td class="${gainClass}">${gainText}</td>
+                <td contenteditable="true" onblur="saveTxNote('${row.id}', this.innerText)" style="border:1px dashed #ccc; padding:4px; min-width:100px;">${note}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+            document.getElementById('resultsTable').style.display = 'table';
+            document.getElementById('exportBtn').style.display = 'inline-block';
+
+            // Update UTXO View
+            renderUTXOs(inventory, currency);
+
+            // Update Dashboard (Simulates global state by recalculating other assets)
+            updateDashboard(inventory, currency);
+        }
+
+        function saveTxNote(id, text) {
+            if (!id) return; // Prevent saving for undefined IDs (e.g. if mocked data lacks them)
+            txState[id] = text;
+        }
+
+        function renderUTXOs(inventory, currency) {
+            const tbody = document.getElementById('utxoBody');
+            tbody.innerHTML = '';
+            let totalVal = 0;
+            // Mock Current Price (Simulated)
+            const currentPrice = currency === 'BTC' ? 45000 : 2500;
+
+            document.getElementById('utxoCount').innerText = inventory.length;
+
+            inventory.forEach(utxo => {
+                const currentVal = utxo.amount * currentPrice;
+                totalVal += currentVal;
+
+                // Check State
+                const state = utxoState[utxo.id] || { frozen: false, label: '' };
+                const isFrozen = state.frozen;
+
+                const tr = document.createElement('tr');
+                if (isFrozen) tr.style.background = '#f0f4c3'; // Light lime for safe/frozen
+
+                const statusIcon = isFrozen ? '❄️ <b>FROZEN</b>' : '🟢 Active';
+                const actionBtn = isFrozen
+                    ? `<button onclick="toggleFreeze('${utxo.id}')" style="background:#ef6c00; font-size:12px; padding:6px;">Unfreeze</button>`
+                    : `<button onclick="toggleFreeze('${utxo.id}')" style="background:#0288d1; font-size:12px; padding:6px;">Freeze</button>`;
+
+                tr.innerHTML = `
+                    <td>${statusIcon}</td>
+                    <td>${utxo.date}</td>
+                    <td>${utxo.amount.toFixed(4)} ${currency}</td>
+                    <td>${formatMoney(utxo.price * utxo.amount)}</td>
+                    <td contenteditable="true" onblur="saveLabel('${utxo.id}', this.innerText)" style="border:1px dashed #ccc; padding:4px;">${state.label}</td>
+                    <td>${actionBtn}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+            document.getElementById('utxoValue').innerText = formatMoney(totalVal);
+        }
+
+        function toggleFreeze(id) {
+            if (!utxoState[id]) utxoState[id] = { frozen: false, label: '' };
+            utxoState[id].frozen = !utxoState[id].frozen;
+            // Re-render (Trigger runAudit to refresh)
+            runAudit(true); // Short-cut: In real app we'd just re-render table or filter inventory
+        }
+
+        function saveLabel(id, text) {
+            if (!utxoState[id]) utxoState[id] = { frozen: false, label: '' };
+            utxoState[id].label = text;
+        }
+
+        function switchTab(view) {
+            document.getElementById('view-dashboard').style.display = view === 'dashboard' ? 'block' : 'none';
+            document.getElementById('view-audit').style.display = view === 'audit' ? 'block' : 'none';
+            document.getElementById('view-utxo').style.display = view === 'utxo' ? 'block' : 'none';
+
+            // Helper to set tab style
+            const setStyle = (id, active) => {
+                const el = document.getElementById(id);
+                el.style.borderBottom = active ? '2px solid #6200ea' : '2px solid transparent';
+                el.style.color = active ? '#6200ea' : '#666';
+            };
+
+            setStyle('tab-dashboard', view === 'dashboard');
+            setStyle('tab-audit', view === 'audit');
+            setStyle('tab-utxo', view === 'utxo');
+        }
+
+        // --- DASHBOARD LOGIC ---
+        function updateDashboard(currentInventory, currentAsset) {
+            // 1. Calculate Stats for ALL assets (Mocking the "Other" asset state)
+            // In a real app we would store global state. Here we simulate fetching the "Other" asset.
+
+            const PRICES = { 'BTC': 45000, 'ETH': 2500 };
+            let totalValue = 0;
+            let totalCost = 0;
+            let holdings = [];
+
+            // Process Current Asset (from recent Audit)
+            const currentVal = currentInventory.reduce((sum, item) => sum + (item.amount * PRICES[currentAsset]), 0);
+            const currentCost = currentInventory.reduce((sum, item) => sum + (item.amount * item.price), 0);
+
+            totalValue += currentVal;
+            totalCost += currentCost;
+            holdings.push({ asset: currentAsset, amount: currentInventory.reduce((s, i) => s + i.amount, 0), value: currentVal });
+
+            // Process "Other" Asset (Simulated/Mocked for Demo purposes if not currently selected)
+            const otherAsset = currentAsset === 'BTC' ? 'ETH' : 'BTC';
+            let otherHistory = otherAsset === 'ETH' ? MOCK_ETH_HISTORY : MOCK_HISTORY;
+
+            // If we are in Demo Mode, ensure we use the extended history for BTC if it's the "Other"
+            if (document.getElementById('xpubInput').value.includes('DEMO')) {
+                if (otherAsset === 'BTC') {
+                    otherHistory = [
+                        ...MOCK_HISTORY,
+                        { type: 'SELL', date: '2023-08-01', amount: 0.1, price: 30000, fee: 5, isCoinJoin: true },
+                        { type: 'BUY', date: '2023-09-01', amount: 0.5, price: 26000, fee: 100, isLightning: true }
+                    ];
+                }
+            }
+
+            const otherResult = calculateGains(otherHistory, 'FIFO'); // Default to FIFO for checking holdings
+            const otherInv = otherResult.inventory;
+            const otherVal = otherInv.reduce((sum, item) => sum + (item.amount * PRICES[otherAsset]), 0);
+            const otherCost = otherInv.reduce((sum, item) => sum + (item.amount * item.price), 0);
+
+            totalValue += otherVal;
+            totalCost += otherCost;
+            holdings.push({ asset: otherAsset, amount: otherInv.reduce((s, i) => s + i.amount, 0), value: otherVal });
+
+            // 2. Update Widgets
+            const unrealized = totalValue - totalCost;
+            const roi = totalCost > 0 ? (unrealized / totalCost) * 100 : 0;
+
+            document.getElementById('db-netWorth').innerText = formatMoney(totalValue);
+            document.getElementById('db-roi').innerText = roi.toFixed(1) + '%';
+            document.getElementById('db-unrealized').innerText = formatMoney(unrealized);
+
+            // 3. Update Holdings Table
+            const tbody = document.getElementById('holdingsBody');
+            tbody.innerHTML = '';
+            holdings.sort((a, b) => b.value - a.value).forEach(h => {
+                const alloc = (h.value / totalValue) * 100;
+                tbody.innerHTML += `
+                    <tr>
+                        <td><b>${h.asset}</b></td>
+                        <td>${h.amount.toFixed(4)}</td>
+                        <td>${formatMoney(h.value)}</td>
+                        <td>${alloc.toFixed(1)}%</td>
+                    </tr>
+                `;
+            });
+
+            // 4. Render Allocation Chart (Simple CSS Bar for now)
+            const btcAlloc = (holdings.find(h => h.asset === 'BTC')?.value || 0) / totalValue * 100;
+            const ethAlloc = (holdings.find(h => h.asset === 'ETH')?.value || 0) / totalValue * 100;
+
+            document.getElementById('allocationCheck').innerHTML = `
+                <div style="width:100%; display:flex; height:20px; border-radius:10px; overflow:hidden;">
+                    <div style="width:${btcAlloc}%; background:#f7931a;" title="BTC ${btcAlloc.toFixed(0)}%"></div>
+                    <div style="width:${ethAlloc}%; background:#627eea;" title="ETH ${ethAlloc.toFixed(0)}%"></div>
+                </div>
+                <div style="display:flex; justify-content:space-between; width:100%; margin-top:5px; font-size:12px;">
+                    <span style="color:#f7931a;">● BTC ${btcAlloc.toFixed(0)}%</span>
+                    <span style="color:#627eea;">● ETH ${ethAlloc.toFixed(0)}%</span>
+                </div>
+            `;
+            document.getElementById('allocationCheck').style.flexDirection = 'column';
+        }
+
+        function exportCSV() {
+            if (!currentReport.length) return;
+
+            const headers = ['Date Sold', 'Date Acquired', 'Amount', 'Proceeds', 'Cost Basis', 'Gain/Loss', 'Wash Sale'];
+            const rows = currentReport.map(r => [
+                r.date,
+                r.dateAcquired || 'N/A',
+                r.amount,
+                r.proceeds.toFixed(2),
+                r.basis.toFixed(2),
+                r.gain.toFixed(2),
+                r.washSale || 'No'
+            ]);
+
+            const csvContent = "data:text/csv;charset=utf-8,"
+                + headers.join(",") + "\n"
+                + rows.map(e => e.join(",")).join("\n");
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "bittax_audit_8949.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        function formatMoney(num) {
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num);
+        }
+    </script>
+</body>
+
+</html>

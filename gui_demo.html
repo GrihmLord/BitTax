@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BitTax Dashboard (Standalone)</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f5f5f5; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
+        .container { background: white; padding: 2rem; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); width: 350px; text-align: center; }
+        h1 { margin-bottom: 0.5rem; color: #333; }
+        .card { background: #f9f9f9; padding: 1rem; border-radius: 8px; margin: 1rem 0; border: 1px solid #eee; }
+        .label { font-size: 0.9rem; color: #666; }
+        .value { font-size: 1.5rem; font-weight: bold; color: #333; }
+        .value.debt { color: #d32f2f; }
+        .value.crypto { color: #f57c00; }
+        .sub-value { font-size: 0.8rem; color: #888; }
+        button { background-color: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 6px; font-size: 1rem; cursor: pointer; width: 100%; margin-top: 0.5rem; transition: background 0.2s; }
+        button:hover { background-color: #0056b3; }
+        button.secondary { background-color: #6c757d; }
+        button.secondary:hover { background-color: #545b62; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>BitTax</h1>
+    <p>Welcome, User</p>
+
+    <div class="card">
+        <div class="label">IRS Tax Debt (2024)</div>
+        <div class="value debt" id="taxDebt">$0.00</div>
+    </div>
+
+    <div class="card">
+        <div class="label">Bitcoin Balance</div>
+        <div class="value crypto" id="btcBalance">0.0000 BTC</div>
+        <div class="sub-value" id="fiatValue">≈ $0.00</div>
+        <div class="sub-value" id="btcPrice">Price: Loading...</div>
+    </div>
+
+    <button onclick="payIRS()">Pay $500 to IRS</button>
+    <button class="secondary" onclick="withdrawBTC()">Withdraw 0.01 BTC</button>
+</div>
+
+<script>
+    // --- REAL LOGIC IMPORTED (Simulated from TaxService.js) ---
+    const TAX_BRACKETS_2024 = [
+        { limit: 11600, rate: 0.10 },
+        { limit: 47150, rate: 0.12 },
+        { limit: 100525, rate: 0.22 },
+        { limit: 191950, rate: 0.24 },
+        { limit: 243725, rate: 0.32 }
+    ];
+
+    function calculateTax(income) {
+        let tax = 0;
+        let previousLimit = 0;
+        for (const bracket of TAX_BRACKETS_2024) {
+            if (income > bracket.limit) {
+                tax += (bracket.limit - previousLimit) * bracket.rate;
+                previousLimit = bracket.limit;
+            } else {
+                tax += (income - previousLimit) * bracket.rate;
+                break;
+            }
+        }
+        return tax;
+    }
+
+    // --- STATE ---
+    let state = {
+        taxDebt: calculateTax(50000), // Initialize with some debt based on $50k income
+        btcBalance: 0.05,
+        btcPrice: 0
+    };
+
+    // --- UI UPDATES ---
+    function updateUI() {
+        document.getElementById('taxDebt').textContent = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(state.taxDebt);
+        document.getElementById('btcBalance').textContent = state.btcBalance.toFixed(4) + ' BTC';
+        document.getElementById('fiatValue').textContent = '≈ ' + new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(state.btcBalance * state.btcPrice);
+        document.getElementById('btcPrice').textContent = 'Price: ' + new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(state.btcPrice);
+    }
+
+    // --- API CALL ---
+    async function fetchPrice() {
+        try {
+            const res = await fetch('https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd');
+            const data = await res.json();
+            state.btcPrice = data.bitcoin.usd;
+            updateUI();
+        } catch (e) {
+            document.getElementById('btcPrice').innerText = 'Price: Error';
+        }
+    }
+
+    // --- ACTIONS ---
+    function payIRS() {
+        if (state.taxDebt <= 0) return alert('No tax debt!');
+        const payment = 500;
+        const btcNeeded = payment / state.btcPrice;
+
+        if (state.btcBalance >= btcNeeded) {
+            state.btcBalance -= btcNeeded;
+            state.taxDebt -= payment;
+            updateUI();
+            alert('Paid $500 to IRS!');
+        } else {
+            alert('Insufficient Bitcoin!');
+        }
+    }
+
+    function withdrawBTC() {
+        const amount = 0.01;
+        if (state.btcBalance >= amount) {
+            state.btcBalance -= amount;
+            updateUI();
+            alert('Withdrew 0.01 BTC!');
+        } else {
+            alert('Insufficient Funds!');
+        }
+    }
+
+    // --- INIT ---
+    fetchPrice();
+    updateUI();
+</script>
+</body>
+</html>

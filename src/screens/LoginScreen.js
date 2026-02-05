@@ -1,17 +1,21 @@
 import React, { useState, useRef } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
-import PropTypes from 'prop-types'; // Make sure to install prop-types package
+import PropTypes from 'prop-types';
+import { useDispatch } from 'react-redux';
+import { login } from '../redux/slices/authSlice';
 
 export default function LoginScreen({ navigation }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const passwordInputRef = useRef(null);
+  const dispatch = useDispatch();
 
   const handleLogin = () => {
     if (!username.trim() || !password.trim()) {
       Alert.alert('Error', 'Both username and password are required!');
     } else {
-      // Implement login logic here
+      dispatch(login({ username }));
+      navigation.navigate('Home');
     }
   };
 
