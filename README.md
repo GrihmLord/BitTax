@@ -64,6 +64,19 @@ npm run dist
 ```
 This will generate a `.exe` installer in the `dist/` folder.
 
+## 🗺️ Roadmap
+### ✅ Completed Phases (v1.0 - v1.9)
+- [x] **Core Audit**: FIFO/LIFO/HIFO logic for Capital Gains.
+- [x] **Privacy Engine**: CoinJoin and Lightning Network detection.
+- [x] **Desktop App**: Local-first Electron wrapper.
+- [x] **Exports**: CSV generation for IRS Form 8949.
+- [x] **Personal Suite**: Portfolio Dashboard, UTXO Manager, and Labeling.
+
+### 🚧 Next Horizons (v2.0+)
+- [ ] **Phase 10: Network Integration**: Connect to Electrum Servers or Blockstream API for real-time history fetching.
+- [ ] **Phase 11: Encrypted Persistence**: Save labels/UTXO state to an encrypted local database (SQLite).
+- [ ] **Phase 12: Spending Construction**: Generate PSBTs (Partially Signed Bitcoin Transactions) using selected UTXO Logic.
+
 ## 🧪 Verification
 The most effective way to verify the logic is using the **Desktop App's Demo Mode**:
 
