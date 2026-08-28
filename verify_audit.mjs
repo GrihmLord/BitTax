@@ -1,71 +1,91 @@
-import { calculateCapitalGains } from './src/services/AuditService.js';
+/**
+ * verify_audit.mjs
+ * Smoke check for the capital gains engine.
+ *
+ * This script previously reported "[FAIL]" for the HIFO case and still exited
+ * 0, so CI and the commit log both showed green. It now exits non-zero on any
+ * failure. The exhaustive suite lives in `src/core/__tests__`; run `npm test`.
+ */
 
-console.log('--- Verifying Audit Logic (FIFO + Fees) ---');
+import { calculateGains } from './src/core/gains.js';
+import { formatUSD } from './src/core/money.js';
 
-const testCases = [
+/** Expected figures are written in dollars; the engine reports integer cents. */
+const cents = (dollars) => BigInt(Math.round(dollars * 100));
+
+const cases = [
     {
         name: 'Simple FIFO',
+        method: 'FIFO',
         history: [
             { type: 'BUY', date: '2023-01-01', amount: 1.0, price: 20000 },
-            { type: 'SELL', date: '2023-06-01', amount: 0.5, price: 30000 }
+            { type: 'SELL', date: '2023-06-01', amount: 0.5, price: 30000 },
         ],
-        expectedGain: 5000
+        expected: 5000,
     },
     {
-        name: 'Fees Included',
+        name: 'Fees folded into basis and proceeds',
+        method: 'FIFO',
         history: [
-            // Buy 1.0 @ 10k + $50 fee. Cost Basis = 10050.
             { type: 'BUY', date: '2023-01-01', amount: 1.0, price: 10000, fee: 50 },
-            // Sell 1.0 @ 20k - $50 fee. Proceeds = 19950.
-            { type: 'SELL', date: '2023-06-01', amount: 1.0, price: 20000, fee: 50 }
+            { type: 'SELL', date: '2023-06-01', amount: 1.0, price: 20000, fee: 50 },
         ],
-        // Gain = Proceeds (19950) - Basis (10050) = 9900
-        expectedGain: 9900
+        expected: 9900,
     },
     {
-        name: 'Wash Sale (Loss Disallowed)',
+        name: 'Wash sale: loss deferred into the replacement lot',
+        method: 'FIFO',
         history: [
-            // Buy 1.0 @ 50k
             { type: 'BUY', date: '2023-01-01', amount: 1.0, price: 50000 },
-            // Sell 1.0 @ 40k (Loss of 10k)
             { type: 'SELL', date: '2023-02-01', amount: 1.0, price: 40000 },
-            // Buy 1.0 @ 42k (Within 30 days of sale -> Triggers Wash Sale)
-            { type: 'BUY', date: '2023-02-15', amount: 1.0, price: 42000 }
+            { type: 'BUY', date: '2023-02-15', amount: 1.0, price: 42000 },
         ],
-        // The 10k loss should be disallowed (0 gain recorded for the sell).
-        // The 10k loss should be disallowed (0 gain recorded for the sell).
-        expectedGain: 0
+        expected: 0,
     },
     {
-        name: 'HIFO Strategy (High Price In First Out)',
+        name: 'HIFO selects the highest cost lot',
+        method: 'HIFO',
         history: [
-            // Buy A: 1.0 @ 50k (Newest, Highest Price)
             { type: 'BUY', date: '2023-02-01', amount: 1.0, price: 50000 },
-            // Buy B: 1.0 @ 10k (Oldest, Lowest Price)
             { type: 'BUY', date: '2023-01-01', amount: 1.0, price: 10000 },
-
-            // Sell 1.0 @ 30k
-            // FIFO would sell Buy B (10k cost) -> Gain = 20k
-            // HIFO should sell Buy A (50k cost) -> Loss = 20k
-            { type: 'SELL', date: '2023-03-01', amount: 1.0, price: 30000 }
+            { type: 'SELL', date: '2023-03-01', amount: 1.0, price: 30000 },
         ],
-        expectedGain: -20000 // Loss of 20k expected with HIFO
-    }
+        expected: -20000,
+    },
+    {
+        name: 'LIFO selects the newest lot',
+        method: 'LIFO',
+        history: [
+            { type: 'BUY', date: '2023-01-01', amount: 1.0, price: 10000 },
+            { type: 'BUY', date: '2023-02-01', amount: 1.0, price: 50000 },
+            { type: 'SELL', date: '2023-03-01', amount: 1.0, price: 30000 },
+        ],
+        expected: -20000,
+    },
 ];
 
-testCases.forEach(({ name, history, expectedGain }) => {
-    // If name contains 'HIFO', use that method
-    const method = name.includes('HIFO') ? 'HIFO' : 'FIFO';
-    const { totalGain } = calculateCapitalGains(history, method);
+console.log('--- Verifying capital gains engine ---');
 
-    console.log(`Test: ${name} [${method}]`);
-    console.log(`  Expected Gain: $${expectedGain}`);
-    console.log(`  Actual Gain:   $${totalGain}`);
+let failures = 0;
 
-    if (Math.abs(totalGain - expectedGain) < 0.01) {
-        console.log('  [PASS]');
-    } else {
-        console.log('  [FAIL]');
+for (const { name, method, history, expected } of cases) {
+    const { summary } = calculateGains(history, { method, asset: 'BTC' });
+
+    // Exact comparison: both sides are integer cents, so there is no tolerance
+    // to set and no rounding to argue about.
+    const expectedCents = cents(expected);
+    const passed = summary.netGainCents === expectedCents;
+    if (!passed) failures += 1;
+
+    console.log(`${passed ? 'PASS' : 'FAIL'}  ${name} [${method}]`);
+    if (!passed) {
+        console.log(`        expected ${formatUSD(expectedCents)}, got ${formatUSD(summary.netGainCents)}`);
     }
-    console.log('---');
-});
+}
+
+console.log(`\n${cases.length - failures}/${cases.length} passed.`);
+
+if (failures > 0) {
+    console.error(`${failures} check(s) failed.`);
+    process.exit(1);
+}

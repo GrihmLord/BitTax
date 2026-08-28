@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!--
+      The authoritative Content-Security-Policy is set as a real response header
+      by the app:// protocol handler in main.js. This meta tag restates it so
+      the page is still constrained if it is ever opened outside that handler.
+    -->
+    <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src app://bittax; style-src app://bittax; img-src app://bittax data:; font-src app://bittax; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'">
+    <title>BitTax Cold Storage Audit</title>
+    <link rel="stylesheet" href="./styles.css">
+</head>
+
+<body>
+    <div class="app">
+        <header class="masthead">
+            <div>
+                <h1>BitTax Cold Storage Audit</h1>
+                <p class="subtitle">Local-first capital gains auditing for self-custodied assets.</p>
+            </div>
+            <div class="badges">
+                <span class="badge badge--offline" id="offlineBadge" title="All outbound network requests are blocked at the session level.">Offline</span>
+                <span class="badge" id="vaultBadge">Vault: checking…</span>
+                <span class="badge" id="versionBadge"></span>
+            </div>
+        </header>
+
+        <div class="banner banner--demo is-hidden" id="demoBanner" aria-live="polite">
+            <strong>Demo profile loaded.</strong>
+            <span>
+                Every figure below comes from sample data, not from your wallet. Nothing is saved
+                while it is loaded — reopen BitTax to return to your own data.
+            </span>
+        </div>
+
+        <div class="banner banner--danger is-hidden" id="secretBanner" role="alert">
+            <strong>Stop.</strong>
+            <span id="secretBannerText"></span>
+        </div>
+
+        <section class="panel">
+            <div class="controls">
+                <label class="field">
+                    <span class="field__label">Asset</span>
+                    <select id="assetSelect"></select>
+                </label>
+
+                <label class="field field--grow">
+                    <span class="field__label">Extended public key or address</span>
+                    <input type="text" id="keyInput" spellcheck="false" autocomplete="off"
+                        placeholder="xpub… / ypub… / zpub…">
+                </label>
+
+                <label class="field">
+                    <span class="field__label">Mark price (USD)</span>
+                    <input type="text" id="markPriceInput" spellcheck="false" autocomplete="off" placeholder="e.g. 45000">
+                </label>
+
+                <label class="field">
+                    <span class="field__label">Cost basis</span>
+                    <select id="methodSelect"></select>
+                </label>
+
+                <button type="button" id="auditButton" class="button button--primary">Run audit</button>
+            </div>
+
+            <div class="controls controls--secondary">
+                <label class="field">
+                    <span class="field__label">Tax year</span>
+                    <select id="taxYearSelect"></select>
+                </label>
+
+                <label class="field">
+                    <span class="field__label">Filing status</span>
+                    <select id="filingStatusSelect"></select>
+                </label>
+
+                <label class="field">
+                    <span class="field__label">Other taxable income (USD)</span>
+                    <input type="text" id="otherIncomeInput" spellcheck="false" autocomplete="off" placeholder="0">
+                </label>
+
+                <label class="toggle">
+                    <input type="checkbox" id="washSaleToggle">
+                    <span>Apply wash sale rule</span>
+                </label>
+
+                <label class="toggle">
+                    <input type="checkbox" id="respectFrozenToggle">
+                    <span>Hold back frozen UTXOs</span>
+                </label>
+            </div>
+
+            <div class="controls controls--links">
+                <button type="button" id="demoButton" class="button button--link">Running a test? Load demo profile</button>
+                <input type="file" id="importInput" class="is-hidden" accept=".csv,text/csv"
+                    title="Transaction history CSV" aria-label="Transaction history CSV file">
+                <button type="button" id="importButton" class="button button--ghost">Import history (CSV)</button>
+                <button type="button" id="export8949Button" class="button button--ghost" disabled>Export Form 8949</button>
+                <button type="button" id="exportAuditButton" class="button button--ghost" disabled>Export working paper</button>
+                <button type="button" id="forgetButton" class="button button--ghost">Forget saved labels</button>
+            </div>
+
+            <output class="status" id="statusLine"></output>
+        </section>
+
+        <nav class="tabs" id="tabs">
+            <button type="button" class="tab is-active" data-view="dashboard">Dashboard</button>
+            <button type="button" class="tab" data-view="audit">Disposals</button>
+            <button type="button" class="tab" data-view="utxo">UTXO manager</button>
+            <button type="button" class="tab" data-view="addresses">Addresses</button>
+            <button type="button" class="tab" data-view="notices">Notices <span class="pill" id="noticeCount">0</span></button>
+        </nav>
+
+        <section class="view" id="view-dashboard">
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat__value" id="dbNetWorth">—</div>
+                    <div class="stat__label">Portfolio value</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="dbCostBasis">—</div>
+                    <div class="stat__label">Cost basis held</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="dbUnrealized">—</div>
+                    <div class="stat__label">Unrealised gain</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="dbRoi">—</div>
+                    <div class="stat__label">Return on holdings</div>
+                </div>
+            </div>
+
+            <div class="split">
+                <div class="card">
+                    <h2>Allocation</h2>
+                    <div class="allocation" id="allocationBar"></div>
+                    <ul class="legend" id="allocationLegend"></ul>
+                    <p class="hint" id="allocationHint"></p>
+                </div>
+
+                <div class="card">
+                    <h2>Holdings</h2>
+                    <div class="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Asset</th>
+                                    <th class="num">Quantity</th>
+                                    <th class="num">Cost basis</th>
+                                    <th class="num">Value</th>
+                                    <th class="num">Share</th>
+                                </tr>
+                            </thead>
+                            <tbody id="holdingsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="view is-hidden" id="view-audit">
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat__value" id="stDisposals">0</div>
+                    <div class="stat__label">Disposals</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="stShortTerm">—</div>
+                    <div class="stat__label">Short-term result</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="stLongTerm">—</div>
+                    <div class="stat__label">Long-term result</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="stNet">—</div>
+                    <div class="stat__label">Net result</div>
+                </div>
+                <div class="stat stat--accent">
+                    <div class="stat__value" id="stTax">—</div>
+                    <div class="stat__label" id="stTaxLabel">Estimated federal tax</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Sold</th>
+                                <th>Acquired</th>
+                                <th>Held</th>
+                                <th class="num">Quantity</th>
+                                <th class="num">Proceeds</th>
+                                <th class="num">Cost basis</th>
+                                <th class="num">Gain / loss</th>
+                                <th>Flags</th>
+                                <th>Note</th>
+                            </tr>
+                        </thead>
+                        <tbody id="disposalsBody"></tbody>
+                    </table>
+                </div>
+                <p class="hint" id="disposalsEmpty">Run an audit to see disposals.</p>
+            </div>
+        </section>
+
+        <section class="view is-hidden" id="view-utxo">
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat__value" id="utxoCount">0</div>
+                    <div class="stat__label">Open lots</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="utxoQuantity">—</div>
+                    <div class="stat__label">Quantity held</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="utxoBasis">—</div>
+                    <div class="stat__label">Cost basis</div>
+                </div>
+                <div class="stat">
+                    <div class="stat__value" id="utxoValue">—</div>
+                    <div class="stat__label">Current value</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <p class="hint">
+                    Freezing a lot holds it back from cost-basis selection, so a frozen coin is only
+                    drawn on when nothing else is left — and you are told when that happens.
+                    Labels and freezes are saved encrypted on this machine.
+                </p>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Status</th>
+                                <th>Acquired</th>
+                                <th class="num">Quantity</th>
+                                <th class="num">Cost basis</th>
+                                <th class="num">Value</th>
+                                <th>Label</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="utxoBody"></tbody>
+                    </table>
+                </div>
+                <p class="hint" id="utxoEmpty">Run an audit to see open lots.</p>
+            </div>
+        </section>
+
+        <section class="view is-hidden" id="view-addresses">
+            <div class="card">
+                <h2>Derived addresses</h2>
+                <p class="hint" id="deriveIntro">
+                    Expands the extended public key above into the addresses your wallet would use.
+                    Watch-only: this needs no private key, and derives nothing that can spend.
+                </p>
+
+                <div class="controls">
+                    <label class="field">
+                        <span class="field__label">Chain</span>
+                        <select id="deriveChainSelect">
+                            <option value="0">Receive (external)</option>
+                            <option value="1">Change (internal)</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span class="field__label">Start index</span>
+                        <input type="text" id="deriveStartInput" value="0" spellcheck="false" autocomplete="off">
+                    </label>
+                    <label class="field">
+                        <span class="field__label">How many</span>
+                        <input type="text" id="deriveCountInput" value="20" spellcheck="false" autocomplete="off">
+                    </label>
+                    <button type="button" id="deriveButton" class="button button--primary">Derive</button>
+                </div>
+
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Path</th>
+                                <th>Address</th>
+                                <th>Public key</th>
+                            </tr>
+                        </thead>
+                        <tbody id="addressesBody"></tbody>
+                    </table>
+                </div>
+                <p class="hint" id="addressesEmpty">Enter an extended public key above, then derive.</p>
+            </div>
+        </section>
+
+        <section class="view is-hidden" id="view-notices">
+            <div class="card">
+                <h2>Notices</h2>
+                <ul class="notices" id="noticesList"></ul>
+                <p class="hint" id="noticesEmpty">No notices.</p>
+            </div>
+        </section>
+
+        <footer class="footer">
+            <p>
+                Estimates only, for planning. Federal tax is modelled without state tax, AMT, credits,
+                phase-outs or prior-year carryforwards, and the rate tables ship unverified — check them
+                against the IRS revenue procedure for your year before filing. This is not tax advice.
+            </p>
+        </footer>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+</body>
+
+</html>
