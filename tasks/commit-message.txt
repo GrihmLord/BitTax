@@ -1,0 +1,62 @@
+fix: remediate audit engine correctness, Electron security, and stub features
+
+The renderer ran with nodeIntegration and no context isolation while building
+table rows from user-entered UTXO labels via innerHTML and inline onblur
+handlers, so a label was a path to code execution. The cost basis engine
+silently ignored its `method` argument, meaning every LIFO and HIFO request
+returned FIFO numbers, and the verifier that caught it printed [FAIL] and
+exited 0. Money was computed in floating point on a document destined for the
+IRS. `npm test` could not start at all.
+
+Underneath those was one structural cause: the calculation existed in three
+divergent copies. This collapses them into a single engine in `src/core` that
+the desktop renderer, the verifiers and the tests all share, so they cannot
+drift apart again.
+
+Correctness:
+- All amounts are integers of base units (satoshi, wei, cent) held as BigInt.
+- FIFO/LIFO/HIFO actually select different lots.
+- Wash sales defer the disallowed loss into the replacement lot's basis and tack
+  the holding period, instead of deleting the loss and overstating income twice.
+- Short/long term classification added; the README claimed it, nothing did it.
+- Overselling is reported at zero basis rather than silently dropped.
+- Lot ids are stable, so freezing or labelling a UTXO stays bound to it.
+- Frozen lots are genuinely held back from selection.
+
+Security:
+- contextIsolation, sandbox, no Node in the renderer, preload bridge only.
+- Content served over an app:// scheme so a real CSP header can be attached.
+- Outbound requests cancelled at the session level, making "offline" enforced.
+- CSV formula injection and RFC 4180 quoting fixed.
+- Pasted xprv / WIF / seed phrases are detected and refused at the boundary.
+- Labels and freezes persist encrypted via the OS keystore.
+
+Features that were fiction are now either real or absent. "Pay $500 to IRS"
+decremented a variable and reported success; a login accepted any credentials;
+xpub validation was `startsWith('xpub')` and derivation returned two hardcoded
+addresses. Validation is now a real Base58Check and BIP32 parse, and derivation
+is implemented — secp256k1, CKDpub, bech32, three address types — behind a
+self-test that disables the feature rather than showing an address it cannot
+vouch for.
+
+Adds CSV history import, so the tool can audit real holdings rather than only
+its own sample data.
+
+Scope: the React Native prototype is removed — `src/{screens,services,components,
+redux,Navigation,utils}`, `App.js`, `App.tsx` and the Expo/TypeScript scaffolding.
+It had no automated coverage beyond one screen and duplicated surfaces `src/core`
+already owns. The desktop app is the product. README, `tasks/finish.md` and the
+staging list in `scripts/finish.sh` are updated to match; leaving a nonexistent
+path in that list would abort the release script under `set -e`.
+
+Build: `build.npmRebuild` is off. With an empty `dependencies` and node_modules
+excluded from the bundle there is never a native module to rebuild against
+Electron's ABI, so the default only bought a full dependency-tree walk before
+every build. Its explanatory note sits at the top level of `package.json`, not
+inside `build` — electron-builder validates that object against a strict schema
+and aborts on any unknown property, comment keys included.
+
+Rate tables ship `verified: false` and the app says so; confirm them against the
+IRS revenue procedure before filing.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>

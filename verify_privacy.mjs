@@ -1,58 +1,69 @@
-import { detectCoinJoin, detectLightningChannel } from './src/services/PrivacyService.js';
+/**
+ * verify_privacy.mjs
+ * Smoke check for the privacy heuristics. Exits non-zero on failure.
+ *
+ * The exhaustive suite lives in `src/core/__tests__/privacy.test.js`.
+ */
 
-console.log('--- Verifying Privacy & Lightning Detection ---');
+import { analyzeCoinJoin, analyzeLightningChannel } from './src/core/privacy.js';
 
-const testCases = [
+const P2WSH = 'bc1qrp33g0q5c5txsp9dysjy386pxqry4y6k9k0q5k2k0q5k2k0q5k2k0q5k2k';
+const P2WPKH = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
+
+const cases = [
     {
-        name: 'Normal Transaction',
-        tx: {
-            inputs: [{}, {}], // 2 inputs
-            outputs: [{ value: 0.5 }, { value: 0.1 }] // 2 outputs, different values
-        },
-        expectCoinJoin: false,
-        expectLN: false
+        name: 'Ordinary two-party payment',
+        tx: { inputs: [{}, {}], outputs: [{ value: 0.5 }, { value: 0.1 }] },
+        coinjoin: false,
+        lightning: false,
     },
     {
-        name: 'CoinJoin (Whirlpool Style)',
+        name: 'CoinJoin with uniform outputs',
         tx: {
-            // 5 inputs, 5 outputs. 
-            // 4 outputs are exactly 0.1 BTC (The mix). 1 is change.
             inputs: [{}, {}, {}, {}, {}],
-            outputs: [
-                { value: 0.1 }, { value: 0.1 }, { value: 0.1 }, { value: 0.1 },
-                { value: 0.0432 } // Change
-            ]
+            outputs: [{ value: 0.1 }, { value: 0.1 }, { value: 0.1 }, { value: 0.1 }, { value: 0.0432 }],
         },
-        expectCoinJoin: true,
-        expectLN: false
+        coinjoin: true,
+        lightning: false,
     },
     {
-        name: 'Lightning Channel Open',
+        name: 'Lightning channel funding',
         tx: {
             inputs: [{ value: 1.0 }],
-            outputs: [
-                // P2WSH Address (62 chars)
-                { address: 'bc1qrp33g0q5c5txsp9dysjy386pxqry4y6k9k0q5k2k0q5k2k0q5k2k0q5k2k', value: 0.5 },
-                { address: 'bc1q_change...', value: 0.499 }
-            ]
+            outputs: [{ address: P2WSH, value: 0.5 }, { address: P2WPKH, value: 0.499 }],
         },
-        expectCoinJoin: false, // Inputs/Outputs too low
-        expectLN: true
-    }
+        coinjoin: false,
+        lightning: true,
+    },
+    {
+        name: 'Crowded transaction with no uniform amount',
+        tx: {
+            inputs: [{}, {}, {}, {}, {}],
+            outputs: [{ value: 0.1 }, { value: 0.2 }, { value: 0.3 }, { value: 0.4 }, { value: 0.5 }],
+        },
+        coinjoin: false,
+        lightning: false,
+    },
 ];
 
-testCases.forEach(({ name, tx, expectCoinJoin, expectLN }) => {
-    const isCJ = detectCoinJoin(tx);
-    const isLN = detectLightningChannel(tx);
+console.log('--- Verifying privacy heuristics ---');
 
-    console.log(`Test: ${name}`);
-    console.log(`  CoinJoin Detected: ${isCJ} (Expected: ${expectCoinJoin})`);
-    console.log(`  Lightning Detected: ${isLN} (Expected: ${expectLN})`);
+let failures = 0;
 
-    if (isCJ === expectCoinJoin && isLN === expectLN) {
-        console.log('  [PASS]');
-    } else {
-        console.log('  [FAIL]');
-    }
-    console.log('---');
-});
+for (const { name, tx, coinjoin, lightning } of cases) {
+    const cj = analyzeCoinJoin(tx);
+    const ln = analyzeLightningChannel(tx);
+    const passed = cj.isCoinJoin === coinjoin && ln.isLightning === lightning;
+    if (!passed) failures += 1;
+
+    console.log(`${passed ? 'PASS' : 'FAIL'}  ${name}`);
+    console.log(`        coinjoin=${cj.isCoinJoin} (${cj.confidence}) — ${cj.reason}`);
+    console.log(`        lightning=${ln.isLightning} (${ln.confidence}) — ${ln.reason}`);
+}
+
+console.log(`\n${cases.length - failures}/${cases.length} passed.`);
+
+if (failures > 0) {
+    console.error(`${failures} check(s) failed.`);
+    process.exit(1);
+}

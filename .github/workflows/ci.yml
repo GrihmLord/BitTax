@@ -1,0 +1,42 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# The workflow only needs to read the repository.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: audit engine
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # The audit core and the Electron entry points have no runtime
+      # dependencies, so this job needs no install at all. That keeps the check
+      # guarding the money maths fast, and independent of whether the React
+      # Native toolchain happens to resolve today.
+      - name: Core and service tests
+        run: npm test
+
+      - name: Smoke verifiers
+        run: npm run verify
+
+      - name: Main process and preload parse
+        run: |
+          node --check main.js
+          node --check preload.js
+          node --check src/main/ipc.js
+          node --check src/main/vault.js
+          node --check src/main/derive.mjs

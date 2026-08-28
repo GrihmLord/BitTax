@@ -8,6 +8,11 @@ node_modules/
 dist/
 web-build/
 
+# Electron build output
+out/
+release/
+build/
+
 # Native
 *.orig.*
 *.jks
@@ -29,7 +34,31 @@ yarn-error.*
 *.pem
 
 # local env files
-.env*.local
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo
+
+# test output
+coverage/
+
+# ---------------------------------------------------------------------------
+# User financial data. None of this belongs in version control.
+#
+# The audit exports and the encrypted vault contain a complete picture of
+# someone's holdings, cost basis and private annotations. The vault is
+# encrypted, but an encrypted blob in a public repo is still an invitation.
+# ---------------------------------------------------------------------------
+bittax_*.csv
+*_8949.csv
+*_working_paper.csv
+vault.enc
+*.vault
+wallets/
+*.xpub
+*.ypub
+*.zpub
+transactions.csv
+history.csv
