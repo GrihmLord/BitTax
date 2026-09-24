@@ -3,26 +3,11 @@
 # dependencies
 node_modules/
 
-# Expo
-.expo/
-dist/
-web-build/
-
 # Electron build output
+dist/
 out/
 release/
 build/
-
-# Native
-*.orig.*
-*.jks
-*.p8
-*.p12
-*.key
-*.mobileprovision
-
-# Metro
-.metro-health-check*
 
 # debug
 npm-debug.*
@@ -31,15 +16,16 @@ yarn-error.*
 
 # macOS
 .DS_Store
+
+# key material
 *.pem
+*.key
+*.p12
 
 # local env files
 .env
 .env.*
 !.env.example
-
-# typescript
-*.tsbuildinfo
 
 # test output
 coverage/

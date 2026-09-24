@@ -1,5 +1,5 @@
 /**
- * verify_audit.mjs
+ * verify-audit.mjs
  * Smoke check for the capital gains engine.
  *
  * This script previously reported "[FAIL]" for the HIFO case and still exited
@@ -7,8 +7,8 @@
  * failure. The exhaustive suite lives in `src/core/__tests__`; run `npm test`.
  */
 
-import { calculateGains } from './src/core/gains.js';
-import { formatUSD } from './src/core/money.js';
+import { calculateGains } from '../src/core/gains.js';
+import { formatUSD } from '../src/core/money.js';
 
 /** Expected figures are written in dollars; the engine reports integer cents. */
 const cents = (dollars) => BigInt(Math.round(dollars * 100));

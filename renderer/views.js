@@ -45,11 +45,12 @@ const disposalFlags = (disposal) => {
 };
 
 /**
- * @param {Array<object>} disposals
+ * @param {Array<object>} disposals - already scoped to one tax year
  * @param {Object<string,string>} notes
- * @param {(txId: string, note: string) => void} onNote
+ * @param {(txId: string, note: string, input: HTMLInputElement) => void} onNote
+ * @param {number} year
  */
-export const renderDisposals = (disposals, notes, onNote) => {
+export const renderDisposals = (disposals, notes, onNote, year) => {
     const body = byId('disposalsBody');
 
     replaceChildren(body, disposals.map((disposal) => el('tr', {}, [
@@ -61,13 +62,24 @@ export const renderDisposals = (disposals, notes, onNote) => {
         moneyCell(disposal.basisCents),
         moneyCell(disposal.gainCents, { colour: true }),
         disposalFlags(disposal),
-        editableCell(notes[disposal.txId] || '', 'Add a note', (value) => onNote(disposal.txId, value)),
+        editableCell(notes[disposal.txId] || '', 'Add a note', (value, input) => onNote(disposal.txId, value, input)),
     ])));
 
+    setText('disposalsEmpty', `No disposals in ${year}. Run an audit, or choose another tax year.`);
     setHidden('disposalsEmpty', disposals.length > 0);
 };
 
-export const renderDisposalSummary = (summary, taxEstimate) => {
+/** One line explaining what the estimate did with losses, when it did anything. */
+const describeLossTreatment = (estimate) => {
+    const parts = [];
+    if (estimate.deductibleLossCents > 0n) parts.push(`${formatUSD(estimate.deductibleLossCents)} of net loss deducted against income`);
+    if (estimate.carryforwardShortTermCents > 0n) parts.push(`${formatUSD(estimate.carryforwardShortTermCents)} short-term loss carries forward`);
+    if (estimate.carryforwardLongTermCents > 0n) parts.push(`${formatUSD(estimate.carryforwardLongTermCents)} long-term loss carries forward`);
+    if (estimate.niitCents > 0n) parts.push(`includes ${formatUSD(estimate.niitCents)} net investment income tax`);
+    return parts.length > 0 ? `${parts.join(' · ')}.` : '';
+};
+
+export const renderDisposalSummary = (summary, taxEstimate, year) => {
     setText('stDisposals', String(summary.disposalCount));
     setText('stShortTerm', formatUSD(summary.shortTermGainCents));
     setText('stLongTerm', formatUSD(summary.longTermGainCents));
@@ -79,12 +91,14 @@ export const renderDisposalSummary = (summary, taxEstimate) => {
 
     if (!taxEstimate) {
         setText('stTax', EM_DASH);
-        setText('stTaxLabel', 'Estimated federal tax');
+        setText('stTaxLabel', `Estimated federal tax · ${year}`);
+        setText('taxHint', '');
         return;
     }
 
     setText('stTax', formatUSD(taxEstimate.totalTaxCents));
     setText('stTaxLabel', `Est. federal tax · ${taxEstimate.year} · marginal ${formatRateBp(taxEstimate.marginalOrdinaryRateBp)}`);
+    setText('taxHint', describeLossTreatment(taxEstimate));
 };
 
 /* --- UTXO manager --------------------------------------------------- */
@@ -93,8 +107,17 @@ const freezeButton = (lot, onToggle) => el('td', {}, [
     el('button', {
         class: 'button button--ghost button--small',
         text: lot.frozen ? 'Unfreeze' : 'Freeze',
-        on: { click: () => onToggle(lot.id) },
+        attrs: { title: 'Freezes every unit from this purchase' },
+        on: { click: () => onToggle(lot.originId) },
     }),
+]);
+
+/** Status plus, for a wash-sale replacement tranche, what was added to its basis. */
+const lotStatusCell = (lot) => el('td', {}, [
+    el('span', { text: lot.frozen ? 'Frozen' : 'Active' }),
+    lot.washAdjustmentCents > 0n
+        ? tag(`WASH +${formatUSD(lot.washAdjustmentCents)}`, 'wash')
+        : null,
 ]);
 
 /**
@@ -108,12 +131,12 @@ export const renderLots = (lots, markPrice, handlers) => {
     replaceChildren(body, lots.map((lot) => {
         const value = markPrice === null ? null : valueOf(lot.units, lot.decimals, markPrice);
         const row = el('tr', {}, [
-            cell(lot.frozen ? 'Frozen' : 'Active'),
+            lotStatusCell(lot),
             cell(lot.acquiredDate),
             quantityCell(lot.units, lot.decimals),
             moneyCell(lot.basisCents),
             value === null ? cell(EM_DASH, 'num') : moneyCell(value),
-            editableCell(lot.label || '', 'e.g. KYC-free', (text) => handlers.onLabel(lot.id, text)),
+            editableCell(lot.label || '', 'e.g. KYC-free', (text, input) => handlers.onLabel(lot.originId, text, input)),
             freezeButton(lot, handlers.onToggleFreeze),
         ]);
         if (lot.frozen) row.classList.add('is-frozen');
@@ -283,7 +306,8 @@ export const setVaultBadge = (vault) => {
         : (vault.reason || 'Nothing will be written to disk.');
 };
 
-export const setExportEnabled = (enabled) => {
-    byId('export8949Button').disabled = !enabled;
-    byId('exportAuditButton').disabled = !enabled;
+/** @param {{form8949: boolean, workingPaper: boolean}} enabled */
+export const setExportEnabled = ({ form8949, workingPaper }) => {
+    byId('export8949Button').disabled = !form8949;
+    byId('exportAuditButton').disabled = !workingPaper;
 };

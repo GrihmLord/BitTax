@@ -63,12 +63,31 @@ test('unknown assets and unknown settings are dropped, not trusted', () => {
     assert.equal(clean.settings.taxYear, null, 'a non-integer year is rejected');
 });
 
-test('an unrecognised transaction type becomes a BUY rather than passing through', () => {
-    const clean = validateVaultPayload({
+/** Coercing a corrupted row into a BUY, as the previous build did, invents a tax lot. */
+test('an unrecognised transaction type is refused, not coerced into a purchase', () => {
+    assert.throws(() => validateVaultPayload({
         histories: { BTC: [{ id: 'a', type: 'TRANSFER', date: '2023-01-01', amount: '1', price: '1' }] },
-    });
+    }), /type must be one of BUY, SELL/);
+});
 
-    assert.equal(clean.histories.BTC[0].type, 'BUY');
+test('a seed phrase pasted into a label or note is never written to disk', () => {
+    const seed = 'abandon ability able about above absent absorb abstract absurd abuse access accident';
+    assert.throws(() => validateVaultPayload({ lotState: { 'lot:a': { frozen: false, label: seed } } }), /was not saved.*seed phrase/);
+    assert.throws(() => validateVaultPayload({ txNotes: { a: 'xprv9s21ZrQH143K3QTDL4LXw2F7HEK3wJUD2nW2nRk4stbPy6cq3jPPqjiChkVvvNKmPGJxWUtg6LnF5kejMRNNU3TGtRBeJgk33yuGBxrMPHi' } }), /PRIVATE key/);
+    // A transaction id is 64 hex digits too; in a note it is almost always that.
+    const txid = '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b';
+    assert.equal(validateVaultPayload({ txNotes: { a: txid } }).txNotes.a, txid);
+});
+
+test('settings default safely and keep the tax inputs as strings', () => {
+    const clean = validateVaultPayload({
+        settings: { filingStatus: 'martian', otherIncome: '85000', carryoverShortTerm: '1200.50' },
+    });
+    assert.equal(clean.settings.filingStatus, 'single');
+    assert.equal(clean.settings.applyWashSale, true, 'an absent toggle keeps its default rather than flipping off');
+    assert.equal(clean.settings.otherIncome, '85000');
+    assert.equal(clean.settings.carryoverShortTerm, '1200.50');
+    assert.equal(clean.settings.carryoverLongTerm, '');
 });
 
 test('oversized input is refused', () => {
@@ -80,8 +99,8 @@ test('oversized input is refused', () => {
         txNotes: { 'tx-1': 'x'.repeat(3000) },
     }), /exceeds 2048 characters/);
 
-    const many = Array.from({ length: 10001 }, (_, i) => ({ id: `t${i}`, type: 'BUY', date: '2023-01-01', amount: '1', price: '1' }));
-    assert.throws(() => validateVaultPayload({ histories: { BTC: many } }), /more than 10000 transactions/);
+    const many = Array.from({ length: 100001 }, (_, i) => ({ id: `t${i}`, type: 'BUY', date: '2023-01-01', amount: '1', price: '1' }));
+    assert.throws(() => validateVaultPayload({ histories: { BTC: many } }), /more than 100000 transactions/);
 });
 
 test('malformed structures are refused', () => {

@@ -3,8 +3,8 @@
  * FIPS 180-4 SHA-256 over byte arrays.
  *
  * Implemented here rather than pulled from a dependency for two reasons: the
- * audit core must run unchanged in Node, in the Electron renderer under a
- * strict CSP, and in React Native; and a checksum routine that guards a user's
+ * audit core must run unchanged under Node, in the Electron renderer under a
+ * strict CSP, and in the main process; and a checksum routine that guards a user's
  * extended public key should not sit behind a supply chain we do not control.
  *
  * Verified against the NIST published vectors in `__tests__/sha256.test.js`.

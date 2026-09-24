@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { estimateTax, ordinaryIncomeTax, calculateTax, formatRateBp, CAPITAL_LOSS_DEDUCTION_LIMIT_CENTS } from '../tax.js';
+import {
+    estimateTax, ordinaryIncomeTax, formatRateBp, netCapitalResult,
+    CAPITAL_LOSS_DEDUCTION_LIMIT_CENTS, CAPITAL_LOSS_DEDUCTION_LIMIT_MFS_CENTS,
+} from '../tax.js';
 import { FILING_STATUS, SUPPORTED_TAX_YEARS, getTaxYear } from '../taxTables.js';
 
 const usd = (dollars) => BigInt(Math.round(dollars * 100));
@@ -114,7 +117,7 @@ test('the estimate reports its own provenance', () => {
 
     assert.equal(result.year, 2024);
     assert.match(result.source, /Rev\. Proc\./);
-    assert.equal(result.verified, false, 'shipped tables are explicitly unverified');
+    assert.equal(result.verified, true, 'the 2024 table is pinned by taxTables.test.js');
 });
 
 test('an unknown year is refused rather than silently substituted', () => {
@@ -122,14 +125,52 @@ test('an unknown year is refused rather than silently substituted', () => {
     assert.throws(() => ordinaryIncomeTax(usd(1000), 'martian'), /Unknown filing status/);
 });
 
-test('the legacy dollar wrapper still works', () => {
-    assert.equal(calculateTax(10000, 'single', 2024), 1000);
-    assert.equal(calculateTax(20000, 'single', 2024), 2168);
-    assert.ok(calculateTax(50000, 'married_joint', 2024) < calculateTax(50000, 'single', 2024));
-});
-
 test('rates render readably', () => {
     assert.equal(formatRateBp(2200), '22%');
     assert.equal(formatRateBp(0), '0%');
     assert.equal(formatRateBp(380), '3.8%');
+    assert.equal(formatRateBp(1225), '12.25%');
+    assert.equal(formatRateBp(1250), '12.5%');
+});
+
+/** 26 U.S.C. 1211(b)(1): $3,000, or $1,500 for a married individual filing separately. */
+test('married filing separately gets half the loss deduction', () => {
+    const result = estimateTax({
+        ordinaryIncomeCents: usd(50000),
+        shortTermGainCents: usd(-10000),
+        filingStatus: FILING_STATUS.MARRIED_SEPARATE,
+        year: 2024,
+    });
+    assert.equal(result.deductibleLossCents, CAPITAL_LOSS_DEDUCTION_LIMIT_MFS_CENTS);
+    assert.equal(result.deductibleLossCents, usd(1500));
+    assert.equal(result.carryforwardCents, usd(8500));
+});
+
+test('carryovers keep their character, with the deduction taken from short term first', () => {
+    assert.deepEqual(netCapitalResult(usd(-2000), usd(-5000)), {
+        netShort: 0n, netLong: 0n, deductibleLossCents: usd(3000),
+        carryforwardShortTermCents: 0n, carryforwardLongTermCents: usd(4000),
+    });
+    // A short term gain first absorbs part of the long term loss.
+    assert.deepEqual(netCapitalResult(usd(2000), usd(-9000)), {
+        netShort: 0n, netLong: 0n, deductibleLossCents: usd(3000),
+        carryforwardShortTermCents: 0n, carryforwardLongTermCents: usd(4000),
+    });
+    assert.deepEqual(netCapitalResult(usd(-10000), usd(4000)), {
+        netShort: 0n, netLong: 0n, deductibleLossCents: usd(3000),
+        carryforwardShortTermCents: usd(3000), carryforwardLongTermCents: 0n,
+    });
+});
+
+test('a prior-year carryover offsets this year\'s gains of the same character first', () => {
+    const result = estimateTax({
+        shortTermGainCents: usd(5000),
+        longTermGainCents: usd(10000),
+        carryoverLongTermLossCents: usd(12000),
+        year: 2024,
+    });
+    // Long term: 10,000 - 12,000 = -2,000, which then offsets the short term gain.
+    assert.equal(result.netLongTermGainCents, 0n);
+    assert.equal(result.netShortTermGainCents, usd(3000));
+    assert.throws(() => estimateTax({ carryoverShortTermLossCents: usd(-1), year: 2024 }), /positive figure/);
 });

@@ -12,7 +12,7 @@ import { DEFAULT_TAX_YEAR, FILING_STATUS } from '../src/core/taxTables.js';
 
 const SAVE_DEBOUNCE_MS = 400;
 
-/** The bridge exposed by preload.js. Absent when the page is opened outside Electron. */
+/** The bridge exposed by preload.cjs. Absent when the page is opened outside Electron. */
 const bridge = () => (typeof window !== 'undefined' ? window.bittax : undefined);
 
 export const createStore = () => ({
@@ -20,7 +20,7 @@ export const createStore = () => ({
     histories: {},
     /** User-supplied current price per asset, as a decimal string. */
     markPrices: {},
-    /** Coin control: lot id -> { frozen, label }. Persisted. */
+    /** Coin control: origin lot id (`lot:<txId>`) -> { frozen, label }. Persisted. */
     lotState: {},
     /** Transaction id -> free text note. Persisted. */
     txNotes: {},
@@ -43,6 +43,8 @@ export const createStore = () => ({
         taxYear: DEFAULT_TAX_YEAR,
         filingStatus: FILING_STATUS.SINGLE,
         otherIncome: '',
+        carryoverShortTerm: '',
+        carryoverLongTerm: '',
     },
 });
 
@@ -73,7 +75,7 @@ export const setLotState = (store, lotId, patch) => {
  * results, so pruning by "is this id live?" would delete every saved Ethereum
  * label the moment someone imported a Bitcoin-only CSV. Labels are user data:
  * a stale one costs a few bytes, a deleted one is gone for good. Clearing
- * everything deliberately is what "Forget saved labels" is for.
+ * everything deliberately is what "Forget saved data" is for.
  */
 export const pruneEmptyAnnotations = (store) => {
     for (const [id, entry] of Object.entries(store.lotState)) {
@@ -90,7 +92,7 @@ export const pruneEmptyAnnotations = (store) => {
  * The transaction history is included deliberately. A tax tool is opened once a
  * year; requiring the CSV to be re-imported on every launch would mean the
  * user's work never survives closing the window. It is encrypted at rest along
- * with everything else, and "Forget saved labels" clears it.
+ * with everything else, and "Forget saved data" clears it.
  *
  * Demo state never reaches here — `persist` refuses to write while the demo
  * profile is loaded.
@@ -112,6 +114,9 @@ const toPersistable = (store) => ({
         respectFrozen: store.settings.respectFrozen,
         taxYear: store.settings.taxYear,
         filingStatus: store.settings.filingStatus,
+        otherIncome: store.settings.otherIncome,
+        carryoverShortTerm: store.settings.carryoverShortTerm,
+        carryoverLongTerm: store.settings.carryoverLongTerm,
     },
 });
 
@@ -135,7 +140,7 @@ export const hydrate = async (store) => {
     store.histories = result.payload.histories || {};
     store.markPrices = result.payload.markPrices || {};
     store.settings = { ...store.settings, ...result.payload.settings };
-    if (!store.settings.taxYear) store.settings.taxYear = DEFAULT_TAX_YEAR;
+    if (!Number.isInteger(store.settings.taxYear)) store.settings.taxYear = DEFAULT_TAX_YEAR;
 
     const transactionCount = Object.values(store.histories)
         .reduce((total, list) => total + (Array.isArray(list) ? list.length : 0), 0);
@@ -144,11 +149,14 @@ export const hydrate = async (store) => {
 };
 
 let saveTimer = null;
+let waiters = [];
 
 /**
  * Queues an encrypted save, coalescing rapid edits.
- * Returns a promise that settles when the write lands, or immediately when
- * there is nowhere safe to write.
+ *
+ * Every caller's promise settles with the outcome of the write that covered
+ * its change — including callers whose timer was superseded by a later edit,
+ * which the previous version left pending forever.
  */
 export const persist = (store) => {
     const api = bridge();
@@ -162,9 +170,18 @@ export const persist = (store) => {
     if (saveTimer) clearTimeout(saveTimer);
 
     return new Promise((resolve) => {
+        waiters.push(resolve);
         saveTimer = setTimeout(async () => {
             saveTimer = null;
-            resolve(await api.vault.save(toPersistable(store)));
+            const settled = waiters;
+            waiters = [];
+            let outcome;
+            try {
+                outcome = await api.vault.save(toPersistable(store));
+            } catch (error) {
+                outcome = { ok: false, error: error.message };
+            }
+            for (const done of settled) done(outcome);
         }, SAVE_DEBOUNCE_MS);
     });
 };

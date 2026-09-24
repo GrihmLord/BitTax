@@ -2,6 +2,45 @@
 
 All notable changes to this project are documented here.
 
+## [2.0.0] — 2026-09-24
+
+A correctness, security and performance overhaul. See
+[`docs/AUDIT-2026-09.md`](docs/AUDIT-2026-09.md) for every finding, its severity and the
+test that pins its fix.
+
+### Changed — figures may differ from 1.x
+
+- **Tax-year scoping.** The estimate, the Disposals stats and the Form 8949 export cover the
+  selected year only. 1.x summed every sale in the history.
+- **Wash sales** run chronologically with lot splitting and statutory holding-period tacking.
+  Replacement tranches appear in the UTXO manager as `lot:<tx>/w<n>`.
+- **Holding period** is decided by calendar day; 29 February purchases follow Rev. Rul. 66-7.
+- **Married filing separately** loss limit is $1,500.
+- **CSV import** skips transfers instead of treating them as trades, merges instead of
+  replacing, and reads zone-less timestamps as UTC.
+- Default tax year is 2025; 2026 table added; all tables verified and pinned.
+
+### Added
+
+- Prior-year capital loss carryover inputs; carryforward reported by character.
+- `calculatePortfolio`, `summariseDisposals`, `summariseByTaxYear`, `mergeHistories`.
+- Coinbase export support (preamble, signed quantities, `Price at Transaction`, `Subtotal`).
+- Desktop smoke test (`npm run smoke`), syntax check (`npm run lint`), CI desktop job.
+
+### Security
+
+- Linux `basic_text` safeStorage backend refused; IPC sender validation; secrets screened out
+  of labels and notes; serialised, fsynced vault writes; stricter `app://` handler.
+
+### Performance
+
+- Address derivation 34× faster (Jacobian coordinates); lot selection by priority queue.
+
+### Removed
+
+- `calculateTax` / `formatCurrency` float wrappers; stale docs, stub pages, Expo assets,
+  `tasks/`, `scripts/finish.sh`.
+
 ## [1.1.0] — 2026-08-22
 
 A remediation pass over the whole tool: the security posture of the desktop

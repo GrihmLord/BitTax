@@ -13,110 +13,132 @@ cryptocurrency holdings and produces a Form 8949 style capital gains report.
 
 > [!NOTE]
 > This is an estimation and record-keeping tool, not tax advice, and not a filing service.
-> The rate tables ship **unverified** — check them against the IRS revenue procedure for
-> your year before you file. Consult a CPA.
+> Consult a CPA before you file.
 
 ## What it does
 
 ### Local and private, enforced rather than promised
 
 - **Offline by construction.** The Electron session cancels every outbound request that is
-  not the app's own `app://` scheme. There is no telemetry, no account, no sync.
+  not the app's own `app://` scheme, and the page's CSP sets `connect-src 'none'`. There is
+  no telemetry, no account, no sync.
 - **Hardened renderer.** `contextIsolation`, `sandbox`, no Node integration, a strict
-  Content-Security-Policy served as a real header, navigation and popups denied, DevTools
-  excluded from packaged builds.
+  Content-Security-Policy served as a real header, navigation, redirects, popups, downloads
+  and permissions denied, DevTools excluded from packaged builds. Every IPC handler refuses
+  calls that do not come from the app's own top-level page.
 - **Watch-only.** Extended *public* keys are parsed and validated; private material is
-  refused at the input boundary and never enters state, logs or persistence.
-- **Encrypted at rest.** Your transaction history, labels, freezes and notes are stored
-  through the OS keystore (DPAPI on Windows, Keychain on macOS, libsecret on Linux), so
-  reopening BitTax lands on your numbers rather than an empty form. If no keystore is
-  available, BitTax declines to write rather than saving anything in the clear. The demo
-  profile never writes, and never overwrites what you have saved.
+  refused at the input boundary — and in labels and notes — and never enters state, logs or
+  persistence.
+- **Encrypted at rest.** History, labels, freezes, notes and settings are stored through the
+  OS keystore (DPAPI on Windows, Keychain on macOS, libsecret or KWallet on Linux). On a
+  Linux desktop with no keyring, Chromium silently falls back to a key compiled into the
+  app; BitTax detects that and declines to write rather than store a blob anyone can
+  decrypt. Saves are serialised, fsynced and atomically renamed. The demo profile never
+  writes.
 
 ### Capital gains
 
-- **Cost basis methods:** FIFO (IRS default), LIFO, HIFO.
-- **Short and long term classification** per IRS holding-period rules, including the
-  "more than one year" boundary and the 29 February roll.
+- **Cost basis methods:** FIFO (IRS default), LIFO, HIFO, over a priority queue: a
+  100,000-row history audits in about a second per method.
+- **Per tax year.** Disposals, the Schedule D figures, the estimate and the Form 8949 export
+  are all scoped to the selected year.
+- **Short and long term** by calendar day, per Pub 544 and Rev. Rul. 66-7 (a 29 February
+  purchase is long term from 1 March of the following year).
 - **Fees** are folded into basis on acquisition and netted from proceeds on disposal.
-- **Wash sale treatment** (optional, on by default): matched by replacement quantity across
-  the 61-day window, with the disallowed loss deferred into the replacement lot's basis and
-  the holding period tacked — not simply deleted.
+- **Wash sale treatment** (optional, on by default), applied in chronological order at the
+  moment each loss is realised: replacements are matched in acquisition order, only the
+  replacing units are adjusted (split into their own tranche), each unit replaces once,
+  units from the same purchase and units already sold are excluded, and the replacement's
+  holding period is tacked by the *days* the washed position was held (§1223(3)). Losses on
+  replacement lots are tested in turn, and HIFO ranks by adjusted basis.
 - **Exact arithmetic.** Every amount is an integer of base units — satoshi, wei, cent —
   held as a BigInt. No figure on a tax document is the result of binary floating point.
+
+### Tax estimate
+
+- Federal ordinary brackets and 0/15/20% long-term rates stacked per the Qualified Dividends
+  and Capital Gain Tax Worksheet, plus the 3.8% NIIT.
+- Tables for **2024, 2025 and 2026**, each pinned figure-by-figure by a test against its
+  revenue procedure (Rev. Proc. 2023-34, 2024-40, 2025-32).
+- Schedule D netting with the $3,000 loss limit ($1,500 married filing separately), and
+  **carryovers in and out by character** (short / long term).
 
 ### Address derivation
 
 - **Watch-only expansion.** An account-level `xpub`/`ypub`/`zpub` becomes the addresses your
   wallet would use — receive and change chains, any index range. Nothing derived here can spend.
-- **Hardened indices are impossible**, not merely blocked: they require a private key, which
-  BitTax never holds.
-- **Self-tested before use.** secp256k1 arithmetic is checked against group identities, bech32
-  against the BIP173 vector, Base58Check against the genesis address, and BIP32 CKDpub against
-  BIP32 test vector 1. Any failure disables derivation instead of producing addresses.
+- **Self-tested before use.** secp256k1 arithmetic is checked against group identities and
+  an independent affine ladder, bech32 against BIP173, Base58Check against the genesis
+  address, and BIP32 CKDpub against BIP32 test vector 1. The test suite also pins the BIP84
+  reference addresses. Any failure disables derivation instead of producing addresses.
+- **Fast.** Jacobian-coordinate scalar multiplication derives 200 addresses in ~0.4 s.
 
 ### Coin control
 
-- **UTXO manager.** See every open lot with its acquisition date, cost basis and value.
-- **Freeze** a lot to hold it back from cost-basis selection. If a sale exhausts everything
-  else and has to reach a frozen lot, you are told which one and when.
-- **Label** lots and annotate transactions. Both are saved encrypted.
-
-### Privacy heuristics
-
-- **CoinJoin / mixer detection** from participant count and exact-satoshi output uniformity,
-  reported with an anonymity set, a confidence level and a plain-language reason.
-- **Lightning channel funding detection** from bech32 P2WSH output shape, mainnet and testnet.
+- **UTXO manager.** Every open lot with its acquisition date, cost basis, value and any
+  wash-sale adjustment it carries.
+- **Freeze** a purchase to hold it back from cost-basis selection. If a sale exhausts
+  everything else and has to reach a frozen lot, you are told which one and when.
+- **Label** lots and annotate transactions. Both are saved encrypted, keyed to the purchase
+  rather than to its position in a file.
 
 ### Import and export
 
-- **Import** a transaction history CSV from a wallet or exchange. Column names are matched
-  across common dialects; rows that cannot be read are reported by line number rather than
-  dropped.
-- **Export** a Form 8949 layout (with the `W` adjustment code and column (g) amount) or a
-  full working paper including your labels and notes. Both are RFC 4180 correct and
-  neutralise spreadsheet formula injection.
+- **Import** CSV exports from wallets and exchanges, including Coinbase's format with its
+  preamble. Columns are matched across dialects; dates are parsed deterministically (zone-less
+  timestamps are UTC); every value is validated per row and failures are reported by line.
+- **Transfers are never guessed at.** Send / Receive / Deposit / Withdrawal rows are skipped
+  and listed, because moving coins to your own cold storage is not a sale. Swaps are flagged
+  for manual entry. Staking and other income becomes a lot at market value, with a notice
+  that its value is ordinary income.
+- **Imports merge.** Re-importing a file, or overlapping exports, never doubles a position.
+- **Export** a per-year Form 8949 layout (with the `W` adjustment code and column (g)
+  amount) or a full working paper including your labels and notes. Both are RFC 4180
+  correct and neutralise spreadsheet formula injection.
 
 ## Install and run
 
 ```bash
-npm install          # only needed for the desktop shell (electron + electron-builder)
+npm install          # the desktop shell (electron, electron-builder, playwright-core)
 npm run electron     # run the desktop app
-npm run electron:dev # same, with DevTools
+npm run electron:dev # same, with DevTools (never in packaged builds)
 npm run dist         # build a Windows installer into dist/
 ```
 
 ## Tests
 
-The audit core has **no runtime dependencies**, so its tests need no install:
+The audit core and the main-process modules have **no runtime dependencies**, so the main
+suite needs no install:
 
 ```bash
-npm test        # the audit core, via the Node test runner
-npm run verify  # smoke checks for the gains engine and privacy heuristics
-npm run check   # both of the above, in order
+npm run check   # syntax check of every source file, the unit suite, and the smoke verifiers
+npm test        # the unit suite alone
 ```
 
-`npm test` covers the money arithmetic, lot selection, wash sales, holding periods, tax
-brackets, CSV writing, CSV import, Base58Check, SHA-256 (against the FIPS 180-4 vectors),
-secp256k1 (against curve identities), bech32 (against BIP173), BIP32 CKDpub (against BIP32
-test vector 1), extended key parsing, secret detection, and the IPC boundary.
+`npm test` covers money arithmetic, lot selection, wash sales, holding periods, tax brackets
+(pinned to the published tables), CSV import and export, Base58Check, SHA-256 (FIPS 180-4),
+secp256k1, bech32 (BIP173), BIP32 CKDpub (test vector 1), BIP84 reference addresses, secret
+detection, the IPC and protocol boundaries, and the encrypted vault's file handling.
 
-To land a release — verify, build, commit, merge to `main` — there is one command:
+The desktop smoke test boots the real app and drives it through the UI — demo audit,
+per-year figures, coin control, secret refusal, derivation, CSV import and the network kill
+switch:
 
 ```bash
-bash scripts/finish.sh
+npm install
+xvfb-run -a npm run smoke   # or just `npm run smoke` on a desktop
 ```
 
-It stops at the first failure and never merges unverified code. See
-[`tasks/finish.md`](tasks/finish.md) for the manual sequence and what each failing suite means.
+CI runs `npm run check` on Node 20, 22 and 24, then the desktop smoke test.
 
 ## Trying it out
 
 1. `npm run electron`
 2. Click **Running a test? Load demo profile** — a banner marks every figure as sample data.
-3. Compare **FIFO / LIFO / HIFO**; the demo set contains a wash sale, a long-term disposal,
-   a CoinJoin-flagged sale and a Lightning channel open.
-4. Freeze a lot in **UTXO manager** and re-run to see selection change.
+3. Switch the **Tax year** between 2023 and 2024; compare **FIFO / LIFO / HIFO**. The demo
+   contains a wash sale, a long-term disposal, a
+   CoinJoin-flagged sale and a Lightning channel open.
+4. Freeze a lot in **UTXO manager** and see the next sale draw elsewhere.
 5. Check **Notices** for engine warnings.
 
 To audit real holdings, use **Import history (CSV)** and enter a mark price per asset.
@@ -124,64 +146,56 @@ To audit real holdings, use **Import history (CSV)** and enter a mark price per 
 ## Architecture
 
 ```text
-main.js              Electron main: app:// scheme, CSP, network kill switch, window lockdown
-preload.js           The entire privileged surface exposed to the renderer
-src/main/            Main-process only: IPC validation, encrypted vault
+main.js              Electron main: window, session lockdown, navigation guards
+preload.cjs          The entire privileged surface exposed to the renderer
+src/main/            Main-process only: app:// protocol, IPC validation, vault, derivation
 src/core/            The audit engine. Pure, dependency-free, shared by every surface
 renderer/            Desktop UI. No innerHTML on user data, no inline handlers
+scripts/             Test runner, syntax check, smoke verifiers, desktop smoke test
 ```
 
-`src/core` is the single implementation of every calculation. Before this it existed in two
-divergent copies plus a third partial copy of the tax brackets, and they had already drifted.
+```mermaid
+flowchart LR
+    CSV[CSV import] -->|validated rows| H[(history)]
+    H --> N[normaliseHistory]
+    N --> E{chronological pass}
+    E -->|BUY| P[LotPool heap]
+    E -->|SELL| D[disposal lines]
+    P --> D
+    D -->|loss| W[washDisposal]
+    W -->|split + adjust| P
+    D --> Y[per-year summary]
+    Y --> T[estimateTax]
+    Y --> F[Form 8949 CSV]
+```
 
-## Roadmap
-
-### Completed
-
-- [x] Cost basis engine: FIFO / LIFO / HIFO on exact integer arithmetic
-- [x] IRS-style wash sale with basis deferral and holding-period tacking
-- [x] Short / long term classification and Form 8949 export
-- [x] Privacy heuristics with confidence and reasons
-- [x] Local-first Electron shell, hardened
-- [x] Portfolio dashboard, UTXO manager, labelling
-- [x] Real BIP32 / SLIP-132 extended key validation
-- [x] CSV history import
-- [x] Encrypted local persistence
-- [x] Test suite and CI that runs it
-- [x] **Address derivation** — secp256k1, BIP32 CKDpub, bech32, and P2PKH / P2SH-P2WPKH /
-      P2WPKH encoding, gated behind a self-test
-
-### Next
-
-- [ ] **Phase 10b — History fetching.** An Electrum or Esplora client behind an explicit,
-      per-session network opt-in, to turn derived addresses into a transaction history
-      automatically instead of importing a CSV.
-- [ ] **Phase 11 — Verified rate tables.** Ship each year with `verified: true` and a test
-      pinned to the published figures.
-- [ ] **Phase 12 — PSBT construction** from the selected, unfrozen UTXO set.
-- [x] **Phase 13 — Decided the fate of the React Native tree.** Removed. The desktop app is
-      the product; the mobile prototype carried no automated coverage and duplicated
-      surfaces that `src/core` already owns.
+`src/core` is the single implementation of every calculation. The main process imports the
+same asset, method, filing-status and secret-detection definitions to validate IPC, so the
+boundary cannot drift from the engine.
 
 ## Known limitations
 
-- **Rate tables are unverified.** `src/core/taxTables.js` marks every year `verified: false`
-  and the app raises a notice. Confirm against the IRS revenue procedure before filing.
-- **Federal only.** No state tax, AMT, credits, phase-outs or prior-year carryforward input.
+- **Federal only.** No state tax, AMT, credits or phase-outs. `Other taxable income` is taxable
+  income after deductions, and stands in for MAGI in the NIIT calculation.
 - **Wash sale applicability.** Section 1091 is written for "stocks or securities"; digital
   assets are generally treated as property, so this treatment is conservative rather than
   certain. It is a visible toggle — decide with your preparer.
-- **Wash sale cascades** are resolved in one pass; a cascade that itself creates a new loss
-  is not re-processed.
-- **No chain lookup.** Addresses can be derived, but nothing fetches their history. Import a
-  CSV for that.
-- **Derivation refuses rather than guesses.** Curve arithmetic, bech32, Base58Check and an
-  end-to-end BIP32 CKDpub vector are all checked before the first address is produced. If
-  any check fails the feature disables itself and names the failing check, because a wrong
-  address shown to someone auditing cold storage is worse than no address at all.
+- **Dates are UTC.** A trade's tax date is its UTC calendar date. Trades made late in the
+  evening in the Americas around 31 December can land in the next year; check those by hand.
+- **Transfers are skipped, not reconciled.** BitTax does not match a Send on one exchange to
+  a Receive in your wallet; basis follows the lots you import.
+- **Swaps need two rows.** A crypto-to-crypto conversion must be entered as a SELL and a BUY.
+- **No chain lookup.** Addresses can be derived, but nothing fetches their history.
 - **Multisig keys (`Ypub`/`Zpub`) cannot be expanded.** An address needs every cosigner's key.
-- **Desktop only.** The React Native prototype was removed in this release; there is no
-  mobile target.
+- **Linux without a keyring** cannot save; the data stays in memory for the session.
+
+## Roadmap
+
+- [ ] **History fetching.** An Electrum or Esplora client behind an explicit, per-session
+      network opt-in, to turn derived addresses into a transaction history.
+- [ ] **Transfer reconciliation** across imported sources.
+- [ ] **Two-leg swap import** for exchanges that export conversions as one row.
+- [ ] **PSBT construction** from the selected, unfrozen UTXO set.
 
 ***
 

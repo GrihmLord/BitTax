@@ -152,7 +152,7 @@ export const maskExtendedKey = (input) => {
  *
  * The two hash functions are injected because BIP32 needs HMAC-SHA512 and
  * addresses need RIPEMD160, neither of which belongs in a dependency-free core.
- * The desktop app supplies them from `node:crypto` via `src/main/derive.mjs`,
+ * The desktop app supplies them from `node:crypto` via `src/main/derive.js`,
  * which also gates every call behind a self-test.
  *
  * Calling this without them throws rather than guessing — the previous
@@ -176,7 +176,7 @@ export const deriveAddressesFromXpub = (input, deps = {}) => {
         const error = new Error(
             `The key is valid (${parsed.label}, BIP${parsed.purpose}), but deriving addresses needs `
             + 'HMAC-SHA512 and RIPEMD160 implementations passed in as { hmacSha512, hash160 }. '
-            + 'In the desktop app this happens in the main process; see src/main/derive.mjs.',
+            + 'In the desktop app this happens in the main process; see src/main/derive.js.',
         );
         error.name = 'MissingCryptoDependencyError';
         error.keyInfo = parsed;

@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <!--
       The authoritative Content-Security-Policy is set as a real response header
-      by the app:// protocol handler in main.js. This meta tag restates it so
+      by the app:// protocol handler in src/main/protocol.js. This meta tag restates it so
       the page is still constrained if it is ever opened outside that handler.
     -->
     <meta http-equiv="Content-Security-Policy"
@@ -84,6 +84,18 @@
                     <input type="text" id="otherIncomeInput" spellcheck="false" autocomplete="off" placeholder="0">
                 </label>
 
+                <label class="field">
+                    <span class="field__label">Carryover loss in: short (USD)</span>
+                    <input type="text" id="carryoverShortInput" spellcheck="false" autocomplete="off" placeholder="0"
+                        title="Short-term capital loss carried over from the prior year, as a positive number">
+                </label>
+
+                <label class="field">
+                    <span class="field__label">Carryover loss in: long (USD)</span>
+                    <input type="text" id="carryoverLongInput" spellcheck="false" autocomplete="off" placeholder="0"
+                        title="Long-term capital loss carried over from the prior year, as a positive number">
+                </label>
+
                 <label class="toggle">
                     <input type="checkbox" id="washSaleToggle">
                     <span>Apply wash sale rule</span>
@@ -102,7 +114,7 @@
                 <button type="button" id="importButton" class="button button--ghost">Import history (CSV)</button>
                 <button type="button" id="export8949Button" class="button button--ghost" disabled>Export Form 8949</button>
                 <button type="button" id="exportAuditButton" class="button button--ghost" disabled>Export working paper</button>
-                <button type="button" id="forgetButton" class="button button--ghost">Forget saved labels</button>
+                <button type="button" id="forgetButton" class="button button--ghost">Forget saved data</button>
             </div>
 
             <output class="status" id="statusLine"></output>
@@ -187,6 +199,7 @@
                     <div class="stat__label" id="stTaxLabel">Estimated federal tax</div>
                 </div>
             </div>
+            <p class="hint" id="taxHint"></p>
 
             <div class="card">
                 <div class="table-scroll">

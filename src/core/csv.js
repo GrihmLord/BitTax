@@ -120,7 +120,9 @@ export const buildForm8949Csv = (disposals, options = {}) => {
     const rows = disposals.map((disposal) => [
         disposal.term === TERM.LONG ? 'Long' : 'Short',
         describeProperty(disposal),
-        disposal.acquiredDate || 'Various',
+        // No acquisition on record: basis was reported as zero. Say so rather
+        // than print 'Various', which claims several known acquisitions.
+        disposal.acquiredDate || 'Unknown',
         disposal.soldDate,
         usdToDecimalString(disposal.proceedsCents),
         usdToDecimalString(disposal.basisCents),
@@ -190,7 +192,7 @@ export const buildAuditCsv = (disposals, options = {}) => {
         usdToDecimalString(disposal.disallowedLossCents),
         disposal.replacementLotIds.join('; '),
         usdToDecimalString(disposal.gainCents),
-        labels[disposal.lotId] || '',
+        labels[disposal.originId] || '',
         notes[disposal.txId] || '',
         rowFlags(disposal),
     ]);

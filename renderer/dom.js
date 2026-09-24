@@ -82,8 +82,8 @@ export const editableCell = (value, placeholder, onCommit) => {
         class: 'cell-input',
         attrs: { type: 'text', value: value || '', placeholder, maxlength: '512', spellcheck: 'false' },
         on: {
-            change: (event) => onCommit(event.target.value),
-            blur: (event) => onCommit(event.target.value),
+            change: (event) => onCommit(event.target.value, event.target),
+            blur: (event) => onCommit(event.target.value, event.target),
         },
     });
     return el('td', {}, [input]);

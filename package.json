@@ -1,6 +1,6 @@
 {
   "name": "bittax",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Local-first cold storage capital gains auditing for self-custodied crypto.",
   "author": "Grihm",
   "license": "UNLICENSED",
@@ -12,8 +12,10 @@
     "dist": "electron-builder --win nsis",
     "dist:all": "electron-builder --win nsis --mac dmg --linux AppImage",
     "test": "node scripts/test.mjs",
-    "verify": "node verify_audit.mjs && node verify_privacy.mjs",
-    "check": "npm test && npm run verify"
+    "verify": "node scripts/verify-audit.mjs && node scripts/verify-privacy.mjs",
+    "lint": "node scripts/check-syntax.mjs",
+    "check": "npm run lint && npm test && npm run verify",
+    "smoke": "node scripts/smoke-electron.mjs"
   },
   "build": {
     "appId": "com.bittax.audit",
@@ -46,23 +48,25 @@
     },
     "files": [
       "main.js",
-      "preload.js",
+      "preload.cjs",
       "package.json",
       "renderer/**/*",
       "src/core/**/*",
       "src/main/**/*",
       "!src/core/__tests__/**",
       "!node_modules/**/*"
-    ]
+    ],
+    "asar": true
   },
-  "//build.npmRebuild": "Off because BitTax has no runtime dependencies and excludes node_modules from the bundle, so there is never a native module to rebuild against Electron's ABI. The default spawns app-builder-lib/helpers/remote-rebuild.js, which walks the whole dependency tree — pure cost for a project with an empty `dependencies`. Note this key lives at the top level, not inside `build`: electron-builder validates `build` against a strict schema and aborts on any unknown property, comment keys included.",
+  "//build.npmRebuild": "Off because BitTax has no runtime dependencies and excludes node_modules from the bundle, so there is never a native module to rebuild against Electron's ABI. The default spawns app-builder-lib/helpers/remote-rebuild.js, which walks the whole dependency tree \u2014 pure cost for a project with an empty `dependencies`. Note this key lives at the top level, not inside `build`: electron-builder validates `build` against a strict schema and aborts on any unknown property, comment keys included.",
   "//dependencies": "BitTax has no runtime dependencies. main.js and preload.js require only `electron` and Node builtins; src/core requires nothing at all. The `!node_modules` entry in build.files stays as a guard so a future dependency cannot silently enter the installer.",
-  "dependencies": {},
   "devDependencies": {
     "electron": "^40.1.0",
-    "electron-builder": "^26.7.0"
+    "electron-builder": "^26.7.0",
+    "playwright-core": "^1.56.1"
   },
   "engines": {
     "node": ">=20.10.0"
-  }
+  },
+  "type": "module"
 }

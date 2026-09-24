@@ -6,7 +6,9 @@ import {
     detectCoinJoin, detectLightningChannel, isP2WSH, isP2WPKH, CONFIDENCE,
 } from '../privacy.js';
 
-const P2WSH_ADDRESS = 'bc1qrp33g0q5c5txsp9dysjy386pxqry4y6k9k0q5k2k0q5k2k0q5k2k0q5k2k';
+// A correctly checksummed P2WSH (32-byte program 03 0a 11 ... by 7s), from the BIP173-verified encoder.
+const P2WSH_ADDRESS = 'bc1qqv9pzxqlyckngw6zf9g9whn9d3eh4qvg37tfmf9tk2uup37w6hwqhqtcjj';
+const P2WSH_TESTNET = 'tb1qqv9pzxqlyckngw6zf9g9whn9d3eh4qvg37tfmf9tk2uup37w6hwqqgahga';
 
 test('a plain two-party transaction is not flagged', () => {
     const tx = { inputs: [{}, {}], outputs: [{ value: '0.5' }, { value: '0.1' }] };
@@ -68,7 +70,14 @@ test('identifies segwit script types by their real bech32 shape', () => {
 });
 
 test('recognises testnet as well as mainnet', () => {
-    assert.equal(isP2WSH(P2WSH_ADDRESS.replace(/^bc/, 'tb')), true);
+    assert.equal(isP2WSH(P2WSH_TESTNET), true);
+});
+
+/** The previous check was a length regex, so any plausible-looking typo counted as a channel open. */
+test('an address with a broken checksum is not a P2WSH', () => {
+    assert.equal(isP2WSH(P2WSH_ADDRESS.replace(/j$/, 'k')), false);
+    assert.equal(isP2WSH(P2WSH_ADDRESS.replace(/^bc/, 'tb')), false, 'the hrp is inside the checksum');
+    assert.equal(isP2WSH(P2WSH_ADDRESS.toUpperCase()), true, 'upper case is valid bech32');
 });
 
 test('a lone P2WSH output beside change reads as a channel funding', () => {

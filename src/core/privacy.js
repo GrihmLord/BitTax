@@ -9,6 +9,7 @@
  */
 
 import { parseUnits } from './decimal.js';
+import { bech32Decode, convertBits, BECH32_CONST } from './bech32.js';
 
 const SATOSHI_DECIMALS = 8;
 
@@ -29,7 +30,7 @@ export const COINJOIN_DEFAULTS = Object.freeze({
  */
 const toSats = (output) => {
     if (typeof output.valueSats === 'bigint') return output.valueSats;
-    if (typeof output.valueSats === 'number') return BigInt(output.valueSats);
+    if (typeof output.valueSats === 'number') return Number.isSafeInteger(output.valueSats) ? BigInt(output.valueSats) : null;
     if (output.value === undefined || output.value === null) return null;
     try {
         return parseUnits(output.value, SATOSHI_DECIMALS);
@@ -108,18 +109,27 @@ export const analyzeCoinJoin = (tx, options = {}) => {
     };
 };
 
-/** Bech32 (BIP173) character set, excluding '1', 'b', 'i' and 'o'. */
-const BECH32_CHARS = 'qpzry9x8gf2tvdw0s3jn54khce6mua7l';
-/**
- * Segwit v0 P2WSH: human readable part, separator, witness version 'q',
- * then a 32 byte program (52 chars) and a 6 char checksum.
- */
-const P2WSH = new RegExp(`^(bc|tb|bcrt)1q[${BECH32_CHARS}]{58}$`);
-/** Segwit v0 P2WPKH carries a 20 byte program, so 20 fewer data characters. */
-const P2WPKH = new RegExp(`^(bc|tb|bcrt)1q[${BECH32_CHARS}]{38}$`);
+/** Human readable parts for mainnet, testnet/signet and regtest. */
+const SEGWIT_HRPS = new Set(['bc', 'tb', 'bcrt']);
 
-export const isP2WSH = (address) => typeof address === 'string' && P2WSH.test(address.toLowerCase());
-export const isP2WPKH = (address) => typeof address === 'string' && P2WPKH.test(address.toLowerCase());
+/**
+ * Decodes a segwit v0 address and returns its witness program length, or
+ * null. The checksum is verified: a shape-only regex accepted any 62
+ * characters that looked right, including typos and fabrications.
+ */
+const v0ProgramLength = (address) => {
+    if (typeof address !== 'string') return null;
+    try {
+        const { hrp, data, constant } = bech32Decode(address);
+        if (!SEGWIT_HRPS.has(hrp) || data[0] !== 0 || constant !== BECH32_CONST) return null;
+        return convertBits(data.slice(1), 5, 8, false).length;
+    } catch {
+        return null;
+    }
+};
+
+export const isP2WSH = (address) => v0ProgramLength(address) === 32;
+export const isP2WPKH = (address) => v0ProgramLength(address) === 20;
 
 /**
  * Analyses a transaction for a Lightning channel funding pattern.

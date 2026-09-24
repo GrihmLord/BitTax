@@ -1,5 +1,5 @@
 /**
- * derive.mjs  (main process only)
+ * derive.js  (main process only)
  * Address derivation from a watch-only extended public key.
  *
  * WHY THIS LIVES IN THE MAIN PROCESS

@@ -2,24 +2,36 @@
  * ipc.js  (main process only)
  * The complete privileged surface available to the renderer.
  *
- * Every channel validates its input before acting. The renderer is treated as
- * untrusted: it renders data the user pasted in, so a bug there must not become
- * a way to write arbitrary files or fill the disk.
+ * The renderer is treated as untrusted: it renders data the user pasted in, so
+ * a bug there must not become a way to write arbitrary files, fill the disk,
+ * or persist something it should not. Every channel therefore:
+ *   - checks the call came from the app's own page (`app://bittax`), and
+ *   - validates its input against the same definitions the engine uses.
  */
 
-const path = require('node:path');
-const fs = require('node:fs/promises');
+import path from 'node:path';
+import fs from 'node:fs/promises';
 
-const vault = require('./vault.js');
+import * as vault from './vault.js';
+import { APP_ORIGIN } from './protocol.js';
+import { SUPPORTED_ASSETS } from '../core/assets.js';
+import { COST_BASIS_METHODS } from '../core/lots.js';
+import { FILING_STATUS } from '../core/taxTables.js';
+import { TX_TYPES } from '../core/transactions.js';
+import { detectSecretMaterial, SECRET_KIND } from '../core/secrets.js';
 
 const MAX_EXPORT_BYTES = 32 * 1024 * 1024;
 const MAX_LABEL_LENGTH = 512;
 const MAX_NOTE_LENGTH = 2048;
-const MAX_ENTRIES = 10000;
-
+const MAX_ANNOTATIONS = 20000;
+/** Matches the importer's row limit, so anything that imports can be saved. */
+const MAX_TRANSACTIONS = 100000;
+const MAX_ID_LENGTH = 256;
 const MAX_KEY_LENGTH = 256;
+const MAX_DECIMAL_LENGTH = 64;
 
-const CHANNELS = Object.freeze({
+/** Channel names. preload.cjs cannot import this module; a test keeps the two in step. */
+export const CHANNELS = Object.freeze({
     APP_INFO: 'bittax:app:info',
     VAULT_STATUS: 'bittax:vault:status',
     VAULT_LOAD: 'bittax:vault:load',
@@ -31,14 +43,12 @@ const CHANNELS = Object.freeze({
 });
 
 /**
- * `derive.mjs` is ESM and this module is CommonJS, so it is pulled in with a
- * dynamic import. Loading it lazily also keeps the elliptic curve self-test out
- * of application startup — it only runs the first time someone asks for
- * addresses.
+ * Loaded lazily so the elliptic curve self-test stays out of application
+ * startup — it only runs the first time someone asks for addresses.
  */
 let derivationModule = null;
 const loadDerivation = async () => {
-    if (!derivationModule) derivationModule = await import('./derive.mjs');
+    derivationModule ??= await import('./derive.js');
     return derivationModule;
 };
 
@@ -59,19 +69,37 @@ const asPlainObject = (value, field) => {
     return value;
 };
 
+const oneOf = (value, allowed, fallback) => (allowed.includes(value) ? value : fallback);
+
+/**
+ * Free text the user typed is screened for spending material before it can be
+ * written to disk. A seed phrase pasted into a label is still a seed phrase.
+ *
+ * A bare 64-digit hex string is let through here: in a note it is far more
+ * likely to be a transaction id than a raw private key.
+ */
+const asAnnotation = (value, max, field) => {
+    const text = asBoundedString(value, max, field);
+    const secret = detectSecretMaterial(text);
+    if (secret && secret.kind !== SECRET_KIND.RAW_PRIVATE_KEY) invalid(`${field} was not saved. ${secret.message}`);
+    return text;
+};
+
+const entriesOf = (raw, field) => {
+    const entries = Object.entries(asPlainObject(raw, field));
+    if (entries.length > MAX_ANNOTATIONS) invalid(`${field} holds more than ${MAX_ANNOTATIONS} entries`);
+    return entries;
+};
+
 /** Validates the coin-control map: `{ 'lot:tx-1': { frozen: bool, label: string } }`. */
 const validateLotState = (raw) => {
-    const source = asPlainObject(raw, 'lotState');
-    const entries = Object.entries(source);
-    if (entries.length > MAX_ENTRIES) invalid(`lotState holds more than ${MAX_ENTRIES} entries`);
-
     const clean = {};
-    for (const [id, state] of entries) {
-        asBoundedString(id, 256, 'lot id');
+    for (const [id, state] of entriesOf(raw, 'lotState')) {
+        asBoundedString(id, MAX_ID_LENGTH, 'lot id');
         const value = asPlainObject(state, `lotState["${id}"]`);
         clean[id] = {
             frozen: Boolean(value.frozen),
-            label: asBoundedString(value.label ?? '', MAX_LABEL_LENGTH, `label for ${id}`),
+            label: asAnnotation(value.label ?? '', MAX_LABEL_LENGTH, `label for ${id}`),
         };
     }
     return clean;
@@ -79,43 +107,46 @@ const validateLotState = (raw) => {
 
 /** Validates the note map: `{ 'tx-1': 'Gift to family' }`. */
 const validateNotes = (raw) => {
-    const source = asPlainObject(raw, 'txNotes');
-    const entries = Object.entries(source);
-    if (entries.length > MAX_ENTRIES) invalid(`txNotes holds more than ${MAX_ENTRIES} entries`);
-
     const clean = {};
-    for (const [id, note] of entries) {
-        asBoundedString(id, 256, 'transaction id');
-        clean[id] = asBoundedString(note, MAX_NOTE_LENGTH, `note for ${id}`);
+    for (const [id, note] of entriesOf(raw, 'txNotes')) {
+        asBoundedString(id, MAX_ID_LENGTH, 'transaction id');
+        clean[id] = asAnnotation(note, MAX_NOTE_LENGTH, `note for ${id}`);
     }
     return clean;
 };
 
-/** Fields a persisted transaction may carry. Anything else is dropped. */
-const TX_NUMERIC_FIELDS = ['amount', 'price', 'fee'];
+/** Decimal fields a persisted transaction may carry. */
+const TX_DECIMAL_FIELDS = ['amount', 'price', 'total', 'fee'];
 
 /**
  * Validates one persisted transaction.
  *
  * Amounts stay as strings: they are decimal values that the engine parses into
  * exact integers, and round-tripping them through a JSON number would reintroduce
- * the floating point error the engine exists to avoid.
+ * the floating point error the engine exists to avoid. An unknown type is
+ * refused rather than coerced — turning a corrupted row into a purchase would
+ * invent a tax lot.
  */
-const validateTransaction = (raw, index) => {
-    const tx = asPlainObject(raw, `history[${index}]`);
-    const clean = {
-        id: asBoundedString(String(tx.id ?? `tx-${index}`), 256, `history[${index}].id`),
-        type: tx.type === 'SELL' ? 'SELL' : 'BUY',
-        date: asBoundedString(String(tx.date ?? ''), 64, `history[${index}].date`),
-        asset: ['BTC', 'ETH'].includes(tx.asset) ? tx.asset : 'BTC',
-        isCoinJoin: Boolean(tx.isCoinJoin),
-        isLightning: Boolean(tx.isLightning),
-    };
+const validateTransaction = (raw, index, asset) => {
+    const tx = asPlainObject(raw, `histories.${asset}[${index}]`);
+    if (!TX_TYPES.includes(tx.type)) invalid(`histories.${asset}[${index}].type must be one of ${TX_TYPES.join(', ')}`);
 
-    for (const field of TX_NUMERIC_FIELDS) {
+    const clean = {
+        type: tx.type,
+        date: asBoundedString(String(tx.date ?? ''), 64, `histories.${asset}[${index}].date`),
+        asset,
+    };
+    if (tx.id !== undefined && tx.id !== null && tx.id !== '') {
+        clean.id = asBoundedString(String(tx.id), MAX_ID_LENGTH, `histories.${asset}[${index}].id`);
+    }
+    if (tx.isCoinJoin) clean.isCoinJoin = true;
+    if (tx.isLightning) clean.isLightning = true;
+    if (tx.isIncome) clean.isIncome = true;
+
+    for (const field of TX_DECIMAL_FIELDS) {
         const value = tx[field];
         if (value === undefined || value === null) continue;
-        clean[field] = asBoundedString(String(value), 64, `history[${index}].${field}`);
+        clean[field] = asBoundedString(String(value), MAX_DECIMAL_LENGTH, `histories.${asset}[${index}].${field}`);
     }
 
     return clean;
@@ -123,18 +154,17 @@ const validateTransaction = (raw, index) => {
 
 /** Validates the saved transaction history, grouped by asset. */
 const validateHistories = (raw) => {
-    const source = asPlainObject(raw ?? {}, 'histories');
     const clean = {};
     let total = 0;
 
-    for (const [asset, list] of Object.entries(source)) {
-        if (!['BTC', 'ETH'].includes(asset)) continue;
+    for (const [asset, list] of Object.entries(asPlainObject(raw ?? {}, 'histories'))) {
+        if (!SUPPORTED_ASSETS.includes(asset)) continue;
         if (!Array.isArray(list)) invalid(`histories.${asset} must be an array`);
 
         total += list.length;
-        if (total > MAX_ENTRIES) invalid(`Saved history holds more than ${MAX_ENTRIES} transactions`);
+        if (total > MAX_TRANSACTIONS) invalid(`Saved history holds more than ${MAX_TRANSACTIONS} transactions`);
 
-        clean[asset] = list.map(validateTransaction);
+        clean[asset] = list.map((tx, index) => validateTransaction(tx, index, asset));
     }
 
     return clean;
@@ -142,31 +172,33 @@ const validateHistories = (raw) => {
 
 /** Validates the per-asset mark prices the user typed in. */
 const validateMarkPrices = (raw) => {
-    const source = asPlainObject(raw ?? {}, 'markPrices');
     const clean = {};
-
-    for (const [asset, price] of Object.entries(source)) {
-        if (!['BTC', 'ETH'].includes(asset)) continue;
-        clean[asset] = asBoundedString(String(price ?? ''), 64, `markPrices.${asset}`);
+    for (const [asset, price] of Object.entries(asPlainObject(raw ?? {}, 'markPrices'))) {
+        if (!SUPPORTED_ASSETS.includes(asset)) continue;
+        clean[asset] = asBoundedString(String(price ?? ''), MAX_DECIMAL_LENGTH, `markPrices.${asset}`);
     }
-
     return clean;
 };
+
+const optionalDecimal = (value, field) => asBoundedString(String(value ?? ''), MAX_DECIMAL_LENGTH, field);
 
 /** Validates the persisted preferences. Unknown keys are dropped, not trusted. */
 const validateSettings = (raw) => {
     const source = asPlainObject(raw ?? {}, 'settings');
     return {
-        method: ['FIFO', 'LIFO', 'HIFO'].includes(source.method) ? source.method : 'FIFO',
-        asset: ['BTC', 'ETH'].includes(source.asset) ? source.asset : 'BTC',
-        applyWashSale: Boolean(source.applyWashSale),
-        respectFrozen: Boolean(source.respectFrozen),
+        method: oneOf(source.method, COST_BASIS_METHODS, 'FIFO'),
+        asset: oneOf(source.asset, SUPPORTED_ASSETS, 'BTC'),
+        applyWashSale: source.applyWashSale === undefined ? true : Boolean(source.applyWashSale),
+        respectFrozen: source.respectFrozen === undefined ? true : Boolean(source.respectFrozen),
         taxYear: Number.isInteger(source.taxYear) ? source.taxYear : null,
-        filingStatus: asBoundedString(source.filingStatus ?? 'single', 64, 'filingStatus'),
+        filingStatus: oneOf(source.filingStatus, Object.values(FILING_STATUS), FILING_STATUS.SINGLE),
+        otherIncome: optionalDecimal(source.otherIncome, 'settings.otherIncome'),
+        carryoverShortTerm: optionalDecimal(source.carryoverShortTerm, 'settings.carryoverShortTerm'),
+        carryoverLongTerm: optionalDecimal(source.carryoverLongTerm, 'settings.carryoverLongTerm'),
     };
 };
 
-const validateVaultPayload = (raw) => {
+export const validateVaultPayload = (raw) => {
     const payload = asPlainObject(raw, 'payload');
     return {
         lotState: validateLotState(payload.lotState ?? {}),
@@ -181,20 +213,35 @@ const validateVaultPayload = (raw) => {
  * Reduces a suggested filename to a safe basename with a `.csv` extension.
  * The renderer proposes a name; it never chooses a directory.
  */
-const safeCsvName = (suggested) => {
+export const safeCsvName = (suggested) => {
     const base = path.basename(asBoundedString(suggested ?? 'bittax_audit_8949.csv', 200, 'filename'));
     const stripped = base.replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+/, '');
     const named = stripped === '' ? 'bittax_audit' : stripped;
     return named.toLowerCase().endsWith('.csv') ? named : `${named}.csv`;
 };
 
+/**
+ * Rejects IPC from anything but the app's own top-level page. Navigation is
+ * already locked down, so this is defence in depth: if a frame ever did load
+ * foreign content, it still could not reach the vault or the file system.
+ */
+export const assertTrustedSender = (event) => {
+    const frame = event?.senderFrame;
+    const url = frame?.url ?? '';
+    if (!url.startsWith(`${APP_ORIGIN}/`) || (frame.parent !== null && frame.parent !== undefined)) {
+        const error = new Error('IPC call from an untrusted frame was refused');
+        error.name = 'IpcSenderError';
+        throw error;
+    }
+};
+
 /** Writes the report the user asked for, to the location the user picked. */
-const handleExportCsv = async ({ dialog, BrowserWindow }, _event, request) => {
+const handleExportCsv = async ({ dialog, BrowserWindow }, event, request) => {
     const { filename, content } = asPlainObject(request, 'export request');
     const text = asBoundedString(content, MAX_EXPORT_BYTES, 'content');
     if (text.trim() === '') invalid('Refusing to export an empty report');
 
-    const [window] = BrowserWindow.getAllWindows();
+    const window = BrowserWindow.fromWebContents(event.sender) ?? BrowserWindow.getAllWindows()[0];
     const result = await dialog.showSaveDialog(window, {
         title: 'Save audit report',
         defaultPath: safeCsvName(filename),
@@ -218,8 +265,8 @@ const handleVaultLoad = async (context) => {
 };
 
 const handleVaultSave = async (context, _event, request) => {
-    const payload = validateVaultPayload(request);
     try {
+        const payload = validateVaultPayload(request);
         const { savedAt } = await vault.writeVault(context, payload);
         return { ok: true, savedAt };
     } catch (error) {
@@ -248,10 +295,9 @@ const handleDeriveStatus = async () => {
  * `parseExtendedPublicKey`, which also refuses private material.
  */
 const handleDeriveAddresses = async (_event, request) => {
-    const { extendedKey, chain, start, count } = asPlainObject(request, 'derive request');
-    const key = asBoundedString(extendedKey, MAX_KEY_LENGTH, 'extendedKey');
-
     try {
+        const { extendedKey, chain, start, count } = asPlainObject(request, 'derive request');
+        const key = asBoundedString(extendedKey, MAX_KEY_LENGTH, 'extendedKey');
         const { deriveAddresses } = await loadDerivation();
         return {
             ok: true,
@@ -271,28 +317,31 @@ const handleDeriveAddresses = async (_event, request) => {
  *
  * @param {{ipcMain:object, dialog:object, safeStorage:object, app:object, BrowserWindow:object}} context
  */
-const registerIpcHandlers = (context) => {
+export const registerIpcHandlers = (context) => {
     const { ipcMain, app, safeStorage } = context;
 
-    ipcMain.handle(CHANNELS.APP_INFO, () => ({
+    const handle = (channel, handler) => ipcMain.handle(channel, (event, ...args) => {
+        assertTrustedSender(event);
+        return handler(event, ...args);
+    });
+
+    handle(CHANNELS.APP_INFO, () => ({
         version: app.getVersion(),
         electron: process.versions.electron,
         offline: true,
         platform: process.platform,
     }));
 
-    ipcMain.handle(CHANNELS.VAULT_STATUS, async () => ({
+    handle(CHANNELS.VAULT_STATUS, async () => ({
         ...vault.encryptionStatus(safeStorage),
         hasVault: await vault.vaultExists(context),
     }));
 
-    ipcMain.handle(CHANNELS.VAULT_LOAD, () => handleVaultLoad(context));
-    ipcMain.handle(CHANNELS.VAULT_SAVE, (event, request) => handleVaultSave(context, event, request));
-    ipcMain.handle(CHANNELS.VAULT_CLEAR, () => vault.clearVault(context));
-    ipcMain.handle(CHANNELS.EXPORT_CSV, (event, request) => handleExportCsv(context, event, request));
+    handle(CHANNELS.VAULT_LOAD, () => handleVaultLoad(context));
+    handle(CHANNELS.VAULT_SAVE, (event, request) => handleVaultSave(context, event, request));
+    handle(CHANNELS.VAULT_CLEAR, () => vault.clearVault(context));
+    handle(CHANNELS.EXPORT_CSV, (event, request) => handleExportCsv(context, event, request));
 
-    ipcMain.handle(CHANNELS.DERIVE_STATUS, () => handleDeriveStatus());
-    ipcMain.handle(CHANNELS.DERIVE_ADDRESSES, (event, request) => handleDeriveAddresses(event, request));
+    handle(CHANNELS.DERIVE_STATUS, () => handleDeriveStatus());
+    handle(CHANNELS.DERIVE_ADDRESSES, (event, request) => handleDeriveAddresses(event, request));
 };
-
-module.exports = { registerIpcHandlers, CHANNELS, safeCsvName, validateVaultPayload };

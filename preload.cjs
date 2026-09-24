@@ -1,5 +1,5 @@
 /**
- * preload.js
+ * preload.cjs
  * The only bridge between the renderer and the main process.
  *
  * `ipcRenderer` itself is never handed to the page. What the renderer gets is
@@ -9,6 +9,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+// Must match CHANNELS in src/main/ipc.js; `ipcBoundary.test.js` fails if they drift.
 const CHANNELS = Object.freeze({
     APP_INFO: 'bittax:app:info',
     VAULT_STATUS: 'bittax:vault:status',

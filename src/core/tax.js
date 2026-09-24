@@ -2,17 +2,20 @@
  * tax.js
  * Federal tax estimation on integer cents.
  *
- * Replaces a flat 22% guess with the actual stacking rules: short term gains
- * are ordinary income, long term gains sit on top of ordinary income and are
- * taxed at the preferential rates from that point upward, and the net
- * investment income surtax applies above its own threshold.
+ * Models the stacking rules of the Qualified Dividends and Capital Gain Tax
+ * Worksheet: net short term gain is ordinary income; net long term gain sits
+ * on top of ordinary income and is taxed at the preferential rates from that
+ * point upward; the net investment income surtax applies above its own
+ * threshold. Netting and the loss limit follow Schedule D, including the
+ * character of any carryover.
  *
  * This is an estimate for planning. It models federal tax only — no state
- * tax, no AMT, no credits, no phase-outs, no carryforward from prior years.
+ * tax, no AMT, no credits, no phase-outs. `ordinaryIncomeCents` is taxable
+ * income before capital results (i.e. after the standard or itemised
+ * deduction), and NIIT uses it as a stand-in for MAGI.
  */
 
 import { getTaxYear, DEFAULT_TAX_YEAR, FILING_STATUS, NIIT_RATE_BP } from './taxTables.js';
-import { parseUSD, formatUSD } from './money.js';
 import { mulDiv, maxBigInt, minBigInt } from './decimal.js';
 
 const BASIS_POINTS = 10000n;
@@ -20,6 +23,12 @@ const CENTS_PER_DOLLAR = 100n;
 
 /** Annual cap on net capital losses deductible against ordinary income (26 U.S.C. 1211(b)). */
 export const CAPITAL_LOSS_DEDUCTION_LIMIT_CENTS = 300000n;
+/** The same cap for married individuals filing separately. */
+export const CAPITAL_LOSS_DEDUCTION_LIMIT_MFS_CENTS = 150000n;
+
+export const capitalLossLimitFor = (filingStatus) => (filingStatus === FILING_STATUS.MARRIED_SEPARATE
+    ? CAPITAL_LOSS_DEDUCTION_LIMIT_MFS_CENTS
+    : CAPITAL_LOSS_DEDUCTION_LIMIT_CENTS);
 
 const toCents = (dollars) => BigInt(dollars) * CENTS_PER_DOLLAR;
 
@@ -79,24 +88,46 @@ export const ordinaryIncomeTax = (taxableIncomeCents, filingStatus = FILING_STAT
 };
 
 /**
- * Nets short and long term results together the way Schedule D does, and caps
- * the amount of a net loss that can offset ordinary income this year.
+ * Nets short and long term results the way Schedule D does and splits any
+ * unused loss into short and long term carryovers.
+ *
+ * Carryovers keep their character (Schedule D Capital Loss Carryover
+ * Worksheet): the deduction is taken from the short term loss first, so what
+ * remains of a long term loss carries forward as long term.
+ *
+ * @param {bigint} shortTermCents - this year's short term result, less any short term carryover in
+ * @param {bigint} longTermCents - likewise for long term
+ * @param {bigint} limitCents - the annual deduction limit for the filing status
  */
-const netCapitalResult = (shortTermGainCents, longTermGainCents) => {
-    const total = shortTermGainCents + longTermGainCents;
+export const netCapitalResult = (shortTermCents, longTermCents, limitCents = CAPITAL_LOSS_DEDUCTION_LIMIT_CENTS) => {
+    const total = shortTermCents + longTermCents;
     if (total >= 0n) {
         // A loss in one class offsets a gain in the other before rates apply.
-        const netShort = maxBigInt(shortTermGainCents + minBigInt(longTermGainCents, 0n), 0n);
-        const netLong = maxBigInt(longTermGainCents + minBigInt(shortTermGainCents, 0n), 0n);
-        return { netShort, netLong, deductibleLossCents: 0n, carryforwardCents: 0n };
+        return {
+            netShort: maxBigInt(shortTermCents + minBigInt(longTermCents, 0n), 0n),
+            netLong: maxBigInt(longTermCents + minBigInt(shortTermCents, 0n), 0n),
+            deductibleLossCents: 0n,
+            carryforwardShortTermCents: 0n,
+            carryforwardLongTermCents: 0n,
+        };
     }
 
-    const deductible = maxBigInt(total, -CAPITAL_LOSS_DEDUCTION_LIMIT_CENTS);
+    // After cross-class offset, what loss is left in each class.
+    let shortLoss = maxBigInt(-shortTermCents, 0n);
+    let longLoss = maxBigInt(-longTermCents, 0n);
+    if (shortTermCents > 0n) longLoss -= shortTermCents;
+    if (longTermCents > 0n) shortLoss -= longTermCents;
+
+    const deductible = minBigInt(-total, limitCents);
+    const fromShort = minBigInt(shortLoss, deductible);
+    const fromLong = deductible - fromShort;
+
     return {
         netShort: 0n,
         netLong: 0n,
-        deductibleLossCents: -deductible,
-        carryforwardCents: -(total - deductible),
+        deductibleLossCents: deductible,
+        carryforwardShortTermCents: shortLoss - fromShort,
+        carryforwardLongTermCents: longLoss - fromLong,
     };
 };
 
@@ -108,6 +139,12 @@ const netInvestmentIncomeTax = (investmentIncomeCents, totalIncomeCents, table, 
     return mulDiv(base, BigInt(NIIT_RATE_BP), BASIS_POINTS);
 };
 
+const requireNonNegative = (value, name) => {
+    if (typeof value !== 'bigint') throw new TypeError(`${name} must be a bigint number of cents`);
+    if (value < 0n) throw new RangeError(`${name} is a loss amount and must be entered as a positive figure`);
+    return value;
+};
+
 /**
  * Full estimate for a year.
  *
@@ -115,6 +152,8 @@ const netInvestmentIncomeTax = (investmentIncomeCents, totalIncomeCents, table, 
  * @param {bigint} [input.ordinaryIncomeCents=0n] - taxable income before capital results
  * @param {bigint} [input.shortTermGainCents=0n]
  * @param {bigint} [input.longTermGainCents=0n]
+ * @param {bigint} [input.carryoverShortTermLossCents=0n] - prior-year short term carryover, as a positive figure
+ * @param {bigint} [input.carryoverLongTermLossCents=0n] - prior-year long term carryover, as a positive figure
  * @param {string} [input.filingStatus='single']
  * @param {number} [input.year]
  * @returns {object} a full breakdown, every figure in integer cents
@@ -123,6 +162,8 @@ export const estimateTax = ({
     ordinaryIncomeCents = 0n,
     shortTermGainCents = 0n,
     longTermGainCents = 0n,
+    carryoverShortTermLossCents = 0n,
+    carryoverLongTermLossCents = 0n,
     filingStatus = FILING_STATUS.SINGLE,
     year = DEFAULT_TAX_YEAR,
 } = {}) => {
@@ -130,7 +171,12 @@ export const estimateTax = ({
     const ordinaryBrackets = resolveBrackets(table, 'ordinary', filingStatus);
     const longTermBrackets = resolveBrackets(table, 'longTerm', filingStatus);
 
-    const { netShort, netLong, deductibleLossCents, carryforwardCents } = netCapitalResult(shortTermGainCents, longTermGainCents);
+    const carryShort = requireNonNegative(carryoverShortTermLossCents, 'carryoverShortTermLossCents');
+    const carryLong = requireNonNegative(carryoverLongTermLossCents, 'carryoverLongTermLossCents');
+    const limit = capitalLossLimitFor(filingStatus);
+
+    const netting = netCapitalResult(shortTermGainCents - carryShort, longTermGainCents - carryLong, limit);
+    const { netShort, netLong, deductibleLossCents } = netting;
 
     const ordinaryBase = maxBigInt(ordinaryIncomeCents - deductibleLossCents, 0n) + netShort;
     const ordinary = taxSlice(ordinaryBase, 0n, ordinaryBrackets);
@@ -149,7 +195,10 @@ export const estimateTax = ({
         netShortTermGainCents: netShort,
         netLongTermGainCents: netLong,
         deductibleLossCents,
-        carryforwardCents,
+        lossLimitCents: limit,
+        carryforwardShortTermCents: netting.carryforwardShortTermCents,
+        carryforwardLongTermCents: netting.carryforwardLongTermCents,
+        carryforwardCents: netting.carryforwardShortTermCents + netting.carryforwardLongTermCents,
         ordinaryTaxCents: ordinary.taxCents,
         longTermTaxCents: longTerm.taxCents,
         niitCents,
@@ -160,27 +209,12 @@ export const estimateTax = ({
     };
 };
 
-/** Renders a basis-point rate for display, e.g. 2200 -> "22%". */
+/** Renders a basis-point rate for display, e.g. 2200 -> "22%", 380 -> "3.8%", 1225 -> "12.25%". */
 export const formatRateBp = (rateBp) => {
-    const whole = Math.floor(rateBp / 100);
-    const fraction = rateBp % 100;
-    return fraction === 0 ? `${whole}%` : `${(rateBp / 100).toFixed(1)}%`;
+    const whole = Math.trunc(rateBp / 100);
+    const fraction = Math.abs(rateBp % 100);
+    if (fraction === 0) return `${whole}%`;
+    return `${whole}.${String(fraction).padStart(2, '0').replace(/0$/, '')}%`;
 };
-
-/**
- * Dollar-denominated convenience wrapper preserving the original TaxService
- * signature, so existing callers and tests keep working.
- *
- * @param {number|string} income - taxable income in dollars
- * @param {string} [filingStatus='single']
- * @param {number} [year]
- * @returns {number} tax owed in dollars
- */
-export const calculateTax = (income, filingStatus = FILING_STATUS.SINGLE, year = DEFAULT_TAX_YEAR) => {
-    const { taxCents } = ordinaryIncomeTax(parseUSD(income), filingStatus, year);
-    return Number(taxCents) / 100;
-};
-
-export const formatCurrency = (amount) => formatUSD(typeof amount === 'bigint' ? amount : parseUSD(amount));
 
 export { FILING_STATUS, DEFAULT_TAX_YEAR };

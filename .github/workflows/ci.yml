@@ -4,7 +4,6 @@ on:
   push:
   pull_request:
 
-# The workflow only needs to read the repository.
 permissions:
   contents: read
 
@@ -13,30 +12,46 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: audit engine
+  core:
+    name: audit engine (node ${{ matrix.node }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # The audit core, the main-process modules and the verifiers have no
+      # runtime dependencies, so this job needs no install. That keeps the
+      # check guarding the money maths fast and independent of the registry.
+      - name: Syntax, tests and verifiers
+        run: npm run check
+
+  desktop:
+    name: desktop smoke test
+    runs-on: ubuntu-latest
+    needs: core
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
 
-      # The audit core and the Electron entry points have no runtime
-      # dependencies, so this job needs no install at all. That keeps the check
-      # guarding the money maths fast, and independent of whether the React
-      # Native toolchain happens to resolve today.
-      - name: Core and service tests
-        run: npm test
+      - name: Install
+        run: npm ci --no-audit --no-fund
 
-      - name: Smoke verifiers
-        run: npm run verify
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's
+      # sandbox needs. BitTax always runs sandboxed, so allow them rather than
+      # weakening the app to suit the runner.
+      - name: Allow the Chromium sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Main process and preload parse
-        run: |
-          node --check main.js
-          node --check preload.js
-          node --check src/main/ipc.js
-          node --check src/main/vault.js
-          node --check src/main/derive.mjs
+      - name: Launch and drive the app
+        run: xvfb-run -a npm run smoke

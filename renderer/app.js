@@ -3,20 +3,24 @@
  * Renderer controller: reads the form, drives the audit core, renders results.
  *
  * It holds no calculation logic of its own. Every number on screen comes from
- * `src/core`, which is the same code the tests and the React Native screens
- * use, so the desktop app cannot drift away from the engine again.
+ * `src/core`, which is the same code the tests and the CLI verifiers use, so
+ * the desktop app cannot drift away from the engine again.
+ *
+ * Figures on the Disposals tab, the estimate and the Form 8949 export are all
+ * scoped to the selected tax year: a return covers one year, and summing every
+ * sale ever made into one estimate was simply wrong.
  */
 
-import { calculateGains } from '../src/core/gains.js';
+import { calculateGains, summariseDisposals } from '../src/core/gains.js';
 import { buildForm8949Csv, buildAuditCsv } from '../src/core/csv.js';
 import { estimateTax } from '../src/core/tax.js';
-import { FILING_STATUS_LABELS, SUPPORTED_TAX_YEARS, getTaxYear } from '../src/core/taxTables.js';
+import { FILING_STATUS_LABELS, SUPPORTED_TAX_YEARS, TAX_YEARS, DEFAULT_TAX_YEAR } from '../src/core/taxTables.js';
 import { SUPPORTED_ASSETS, getAsset } from '../src/core/assets.js';
 import { COST_BASIS_METHODS } from '../src/core/lots.js';
 import { parsePrice, parseUSD, valueOf } from '../src/core/money.js';
 import { parseExtendedPublicKey, maskExtendedKey } from '../src/core/xpub.js';
-import { detectSecretMaterial } from '../src/core/secrets.js';
-import { importTransactions } from '../src/core/importCsv.js';
+import { detectSecretMaterial, SECRET_KIND } from '../src/core/secrets.js';
+import { importTransactions, mergeHistories } from '../src/core/importCsv.js';
 import { DEMO_HISTORY, DEMO_MARK_PRICES, DEMO_KEY_PLACEHOLDER, isDemoKey } from './demoProfile.js';
 import { byId, setText, setHidden } from './dom.js';
 import {
@@ -39,6 +43,23 @@ const optionalPrice = (raw) => {
     if (text === '') return null;
     return parsePrice(text);
 };
+
+/** Parses an optional dollar amount that must not be negative; blank is zero. */
+const optionalDollars = (raw, name) => {
+    const text = String(raw || '').trim().replace(/[$,\s]/g, '');
+    if (text === '') return 0n;
+    const cents = parseUSD(text);
+    if (cents < 0n) throw new RangeError(`${name} must not be negative`);
+    return cents;
+};
+
+/** Notices raised by an import; they outlive re-runs of the audit until the next import. */
+const IMPORT_CODES = new Set(['IMPORT_ERROR', 'IMPORT_SKIPPED', 'IMPORT_INCOME']);
+
+const selectedYear = () => store.settings.taxYear;
+
+const disposalsInYear = (result, year = selectedYear()) =>
+    (result ? result.disposals.filter((disposal) => disposal.taxYear === year) : []);
 
 const currentAsset = () => store.settings.asset;
 
@@ -137,29 +158,57 @@ const collectHoldings = () => SUPPORTED_ASSETS
     })
     .filter(Boolean);
 
-/** Builds the federal estimate across every audited asset. */
+/** Builds the federal estimate for the selected year, across every audited asset. */
 const buildTaxEstimate = () => {
+    const year = selectedYear();
     const totals = SUPPORTED_ASSETS.reduce((acc, asset) => {
-        const result = store.results[asset];
-        if (!result) return acc;
+        const summary = summariseDisposals(disposalsInYear(store.results[asset], year));
         return {
-            shortTermGainCents: acc.shortTermGainCents + result.summary.shortTermGainCents,
-            longTermGainCents: acc.longTermGainCents + result.summary.longTermGainCents,
+            shortTermGainCents: acc.shortTermGainCents + summary.shortTermGainCents,
+            longTermGainCents: acc.longTermGainCents + summary.longTermGainCents,
         };
     }, { shortTermGainCents: 0n, longTermGainCents: 0n });
 
+    if (!TAX_YEARS[year]) {
+        addNotice(store, NOTICE_LEVEL.INFO, 'TAX_TABLE_MISSING',
+            `BitTax has no rate table for ${year}, so no estimate is shown. Gains and the Form 8949 export are unaffected.`);
+        return null;
+    }
+
     try {
         return estimateTax({
-            ordinaryIncomeCents: store.settings.otherIncome ? parseUSD(store.settings.otherIncome) : 0n,
+            ordinaryIncomeCents: optionalDollars(store.settings.otherIncome, 'Other taxable income'),
             shortTermGainCents: totals.shortTermGainCents,
             longTermGainCents: totals.longTermGainCents,
+            carryoverShortTermLossCents: optionalDollars(store.settings.carryoverShortTerm, 'Short-term carryover'),
+            carryoverLongTermLossCents: optionalDollars(store.settings.carryoverLongTerm, 'Long-term carryover'),
             filingStatus: store.settings.filingStatus,
-            year: store.settings.taxYear,
+            year,
         });
     } catch (error) {
         addNotice(store, NOTICE_LEVEL.WARNING, 'TAX_ESTIMATE_UNAVAILABLE', error.message);
         return null;
     }
+};
+
+/**
+ * Every year that has a rate table or a disposal, newest first. A year with
+ * sales but no table can still be reviewed and exported.
+ */
+const availableYears = () => {
+    const years = new Set(SUPPORTED_TAX_YEARS);
+    for (const result of Object.values(store.results)) {
+        for (const disposal of result ? result.disposals : []) years.add(disposal.taxYear);
+    }
+    years.add(selectedYear());
+    return [...years].sort((a, b) => b - a);
+};
+
+const refreshYearSelect = () => {
+    fillSelect('taxYearSelect', availableYears().map((year) => ({
+        value: year,
+        label: TAX_YEARS[year] ? String(year) : `${year} (no rate table)`,
+    })), selectedYear());
 };
 
 /** Turns engine warnings into user-visible notices. */
@@ -186,22 +235,22 @@ const render = () => {
     const decimals = getAsset(asset).decimals;
     const price = markPriceFor(asset);
 
-    const disposals = result ? result.disposals : [];
+    const disposals = disposalsInYear(result);
     const openLots = result ? result.openLots : [];
 
-    renderDisposals(disposals, store.txNotes, handleNote);
-    renderDisposalSummary(result ? result.summary : EMPTY_SUMMARY, result ? store.taxEstimate : null);
+    renderDisposals(disposals, store.txNotes, handleNote, selectedYear());
+    renderDisposalSummary(result ? summariseDisposals(disposals) : EMPTY_SUMMARY, result ? store.taxEstimate : null, selectedYear());
     renderLots(openLots, price, { onToggleFreeze: handleToggleFreeze, onLabel: handleLabel });
     renderLotSummary(openLots, price, decimals);
 
     renderDashboard(collectHoldings());
     renderNotices(store.notices);
-    setExportEnabled(Boolean(result && result.disposals.length > 0));
+    setExportEnabled({ form8949: disposals.length > 0, workingPaper: Boolean(result && result.disposals.length > 0) });
 };
 
 /** The main action: screen input, run every asset, estimate tax, render. */
 const runAudit = () => {
-    clearNotices(store, (notice) => notice.code !== 'IMPORT_ERROR');
+    clearNotices(store, (notice) => !IMPORT_CODES.has(notice.code) && notice.code !== 'SAVE_FAILED');
     if (!screenKeyInput()) { render(); return; }
 
     const audited = SUPPORTED_ASSETS.filter((asset) => historyFor(asset).length > 0);
@@ -225,38 +274,73 @@ const runAudit = () => {
     }
 
     surfaceEngineWarnings();
+    refreshYearSelect();
     store.taxEstimate = buildTaxEstimate();
     noteTaxTableProvenance(store.taxEstimate);
 
     pruneEmptyAnnotations(store);
     render();
-    setStatus(`Audited ${audited.join(' and ')} · ${store.settings.method} · ${describeWashSetting()}.`, 'ok');
+    setStatus(`Audited ${audited.join(' and ')} · ${store.settings.method} · ${describeWashSetting()} · showing ${selectedYear()}.`, 'ok');
 };
 
 const describeWashSetting = () => (store.settings.applyWashSale ? 'wash sale rule applied' : 'wash sale rule off');
 
 /* --- annotation handlers -------------------------------------------- */
 
-function handleNote(txId, note) {
+/**
+ * Saves, and says so when the save did not land. A silent failure here means
+ * the user closes the app believing their labels are kept.
+ */
+const save = async () => {
+    const outcome = await persist(store);
+    if (outcome.ok || outcome.skipped) return;
+    addNotice(store, NOTICE_LEVEL.ERROR, 'SAVE_FAILED', `Your changes were not saved: ${outcome.error || 'unknown error'}`);
+    renderNotices(store.notices);
+    setStatus('Save failed — see Notices.', 'error');
+};
+
+/**
+ * Refuses annotation text that carries spending authority. A bare 64-digit
+ * hex string is allowed: in a note it is almost always a transaction id.
+ *
+ * @returns {boolean} whether the text may be stored
+ */
+const screenAnnotation = (text) => {
+    const secret = detectSecretMaterial(text);
+    if (!secret || secret.kind === SECRET_KIND.RAW_PRIVATE_KEY) return true;
+    setText('secretBannerText', secret.message);
+    setHidden('secretBanner', false);
+    setStatus('That text was not saved — see the warning above.', 'error');
+    return false;
+};
+
+function handleNote(txId, note, input) {
     if ((store.txNotes[txId] || '') === note) return;
+    if (!screenAnnotation(note)) { input.value = store.txNotes[txId] || ''; return; }
     store.txNotes[txId] = note;
-    persist(store);
+    save();
 }
 
-function handleLabel(lotId, label) {
-    if (getLotState(store, lotId).label === label) return;
-    setLotState(store, lotId, { label });
-    persist(store);
+function handleLabel(originId, label, input) {
+    if (getLotState(store, originId).label === label) return;
+    if (!screenAnnotation(label)) { input.value = getLotState(store, originId).label; return; }
+    setLotState(store, originId, { label });
+    // Every tranche of the purchase shows the same label; no re-audit needed.
+    for (const result of Object.values(store.results)) {
+        for (const lot of result ? result.lots : []) if (lot.originId === originId) lot.label = label;
+    }
+    save();
+    render();
 }
 
 /**
  * Freezing changes which lots the engine may select, so the audit is re-run
- * with the user's real settings — the old build re-ran in demo mode and
- * silently swapped the user's data for sample data.
+ * with the user's real settings. State is keyed by the purchase, so freezing
+ * a wash-adjusted tranche freezes the whole purchase it came from.
  */
-function handleToggleFreeze(lotId) {
-    setLotState(store, lotId, { frozen: !getLotState(store, lotId).frozen });
-    persist(store);
+function handleToggleFreeze(originId) {
+    setLotState(store, originId, { frozen: !getLotState(store, originId).frozen });
+    save();
     runAudit();
     showTab('utxo');
 }
@@ -268,29 +352,38 @@ const handleImport = async (file) => {
 
     try {
         const text = await file.text();
-        const { byAsset, errors, imported } = importTransactions(text, { defaultAsset: currentAsset() });
+        const { byAsset, errors, skipped, incomeCount, imported } = importTransactions(text, { defaultAsset: currentAsset() });
 
-        clearNotices(store, (notice) => notice.code === 'IMPORT_ERROR');
-        for (const message of errors.slice(0, 20)) addNotice(store, NOTICE_LEVEL.WARNING, 'IMPORT_ERROR', message);
-        if (errors.length > 20) {
-            addNotice(store, NOTICE_LEVEL.WARNING, 'IMPORT_ERROR', `…and ${errors.length - 20} more rows were skipped.`);
+        clearNotices(store, (notice) => IMPORT_CODES.has(notice.code));
+        reportRows('IMPORT_ERROR', NOTICE_LEVEL.WARNING, errors, 'rows were rejected');
+        reportRows('IMPORT_SKIPPED', NOTICE_LEVEL.INFO, skipped.map((entry) => entry.message), 'rows were skipped');
+        if (incomeCount > 0) {
+            addNotice(store, NOTICE_LEVEL.WARNING, 'IMPORT_INCOME',
+                `${incomeCount} income receipt${incomeCount === 1 ? '' : 's'} (staking, rewards, mining) became lots at market value. `
+                + 'That value is ordinary income for the year received; add it to "Other taxable income".');
         }
 
         if (imported === 0) {
-            setStatus('Nothing imported — every row was rejected. See notices.', 'error');
+            setStatus('Nothing imported — no row was a purchase or sale. See notices.', 'error');
             render();
             return;
         }
 
-        store.histories = byAsset;
+        // A demo overlay is replaced, never merged into: sample data must not
+        // end up in the user's saved history.
+        const base = store.demoLoaded ? {} : store.histories;
+        const { histories, added, duplicates } = mergeHistories(base, byAsset);
+
+        store.histories = histories;
         store.demoLoaded = false;
         store.addresses = [];
         renderAddresses([]);
         setHidden('demoBanner', true);
         // Saved encrypted so the history survives closing the app; a tax tool
         // that forgets everything on exit is one people re-import into yearly.
-        persist(store);
-        setStatus(`Imported ${imported} transaction${imported === 1 ? '' : 's'} across ${Object.keys(byAsset).join(', ')}.`, 'ok');
+        save();
+        const duplicateNote = duplicates > 0 ? `; ${duplicates} already present` : '';
+        setStatus(`Imported ${added} new transaction${added === 1 ? '' : 's'}${duplicateNote}.`, 'ok');
         runAudit();
     } catch (error) {
         addNotice(store, NOTICE_LEVEL.ERROR, 'IMPORT_FAILED', error.message);
@@ -299,17 +392,31 @@ const handleImport = async (file) => {
     }
 };
 
+const MAX_ROW_NOTICES = 20;
+
+const reportRows = (code, level, messages, summary) => {
+    for (const message of messages.slice(0, MAX_ROW_NOTICES)) addNotice(store, level, code, message);
+    if (messages.length > MAX_ROW_NOTICES) {
+        addNotice(store, level, code, `…and ${messages.length - MAX_ROW_NOTICES} more ${summary}.`);
+    }
+};
+
+/**
+ * Form 8949 is filed per year, so it exports the selected year only. The
+ * working paper is the full history, for a preparer reviewing every lot.
+ */
 const handleExport = async (kind) => {
     const result = store.results[currentAsset()];
-    if (!result || result.disposals.length === 0) return;
+    const asset = currentAsset().toLowerCase();
+    const year = selectedYear();
+    const disposals = kind === '8949' ? disposalsInYear(result, year) : (result ? result.disposals : []);
+    if (disposals.length === 0) return;
 
     const content = kind === '8949'
-        ? buildForm8949Csv(result.disposals)
-        : buildAuditCsv(result.disposals, { labels: labelMap(), notes: store.txNotes });
+        ? buildForm8949Csv(disposals)
+        : buildAuditCsv(disposals, { labels: labelMap(), notes: store.txNotes });
 
-    const filename = kind === '8949'
-        ? `bittax_${currentAsset().toLowerCase()}_8949.csv`
-        : `bittax_${currentAsset().toLowerCase()}_working_paper.csv`;
+    const filename = kind === '8949' ? `bittax_${asset}_${year}_8949.csv` : `bittax_${asset}_working_paper.csv`;
 
     const api = bridge();
     if (!api) {
@@ -416,6 +523,12 @@ const loadDemoProfile = () => {
     store.addresses = [];
     renderAddresses([]);
 
+    // Show the demo's most recent sales rather than an empty current year.
+    // Nothing persists while the demo is loaded, so the user's saved year is safe.
+    store.settings.taxYear = Math.max(...DEMO_HISTORY.BTC.concat(DEMO_HISTORY.ETH)
+        .filter((tx) => tx.type === 'SELL')
+        .map((tx) => Number(tx.date.slice(0, 4))));
+
     byId('keyInput').value = DEMO_KEY_PLACEHOLDER;
     byId('markPriceInput').value = DEMO_MARK_PRICES[currentAsset()] || '';
     setHidden('demoBanner', false);
@@ -429,7 +542,7 @@ const loadDemoProfile = () => {
 const populateSelects = () => {
     fillSelect('assetSelect', SUPPORTED_ASSETS.map((asset) => ({ value: asset, label: getAsset(asset).name })), store.settings.asset);
     fillSelect('methodSelect', COST_BASIS_METHODS.map((method) => ({ value: method, label: method })), store.settings.method);
-    fillSelect('taxYearSelect', SUPPORTED_TAX_YEARS.map((year) => ({ value: year, label: String(year) })), store.settings.taxYear);
+    refreshYearSelect();
     fillSelect('filingStatusSelect',
         Object.entries(FILING_STATUS_LABELS).map(([value, label]) => ({ value, label })),
         store.settings.filingStatus);
@@ -439,13 +552,15 @@ const applySettingsToForm = () => {
     byId('washSaleToggle').checked = store.settings.applyWashSale;
     byId('respectFrozenToggle').checked = store.settings.respectFrozen;
     byId('otherIncomeInput').value = store.settings.otherIncome || '';
+    byId('carryoverShortInput').value = store.settings.carryoverShortTerm || '';
+    byId('carryoverLongInput').value = store.settings.carryoverLongTerm || '';
     byId('markPriceInput').value = store.markPrices[currentAsset()] || '';
 };
 
 /** A setting changed: record it, save it, and re-run if results already exist. */
 const onSettingChanged = (patch, { rerun = true } = {}) => {
     Object.assign(store.settings, patch);
-    persist(store);
+    save();
     if (rerun && Object.keys(store.results).length > 0) runAudit();
     else render();
 };
@@ -475,7 +590,9 @@ const wireEvents = () => {
     byId('washSaleToggle').addEventListener('change', (event) => onSettingChanged({ applyWashSale: event.target.checked }));
     byId('respectFrozenToggle').addEventListener('change', (event) => onSettingChanged({ respectFrozen: event.target.checked }));
 
-    byId('otherIncomeInput').addEventListener('change', (event) => onSettingChanged({ otherIncome: event.target.value.trim() }));
+    byId('otherIncomeInput').addEventListener('change', (event) => onDollarSettingChanged('otherIncome', event.target, 'Other taxable income'));
+    byId('carryoverShortInput').addEventListener('change', (event) => onDollarSettingChanged('carryoverShortTerm', event.target, 'Short-term carryover'));
+    byId('carryoverLongInput').addEventListener('change', (event) => onDollarSettingChanged('carryoverLongTerm', event.target, 'Long-term carryover'));
     byId('markPriceInput').addEventListener('change', (event) => onMarkPriceChanged(event.target.value.trim()));
 
     byId('forgetButton').addEventListener('click', handleForget);
@@ -496,6 +613,19 @@ const wireEvents = () => {
     });
 };
 
+/** Validates a dollar field before it is stored, so a typo is caught where it was typed. */
+const onDollarSettingChanged = (key, input, name) => {
+    const raw = input.value.trim();
+    try {
+        optionalDollars(raw, name);
+    } catch (error) {
+        setStatus(`${name} rejected: ${error.message}`, 'error');
+        input.value = store.settings[key] || '';
+        return;
+    }
+    onSettingChanged({ [key]: raw });
+};
+
 const onMarkPriceChanged = (raw) => {
     try {
         optionalPrice(raw);
@@ -504,7 +634,7 @@ const onMarkPriceChanged = (raw) => {
         return;
     }
     store.markPrices[currentAsset()] = raw;
-    persist(store);
+    save();
     render();
 };
 
@@ -560,12 +690,9 @@ const start = async () => {
         addNotice(store, NOTICE_LEVEL.WARNING, 'VAULT_UNAVAILABLE', outcome.reason);
     }
 
-    // A restored tax year must still exist in the shipped tables.
-    try {
-        getTaxYear(store.settings.taxYear);
-    } catch {
-        store.settings.taxYear = SUPPORTED_TAX_YEARS[0];
-    }
+    // A restored year need not have a rate table — a year with sales but no
+    // table can still be reviewed and exported — but it must be a year.
+    if (!Number.isInteger(store.settings.taxYear)) store.settings.taxYear = DEFAULT_TAX_YEAR;
 
     populateSelects();
     applySettingsToForm();

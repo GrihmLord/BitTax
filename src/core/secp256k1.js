@@ -7,11 +7,10 @@
  * key handling here and no signing — BitTax is watch-only, so the operations
  * that could move funds are simply absent.
  *
- * The curve is y^2 = x^3 + 7 over F_p, so a = 0 and the doubling formula drops
- * a term. Coordinates are affine, which costs one modular inverse per point
- * operation. Jacobian coordinates would be several times faster, but this runs
- * a few dozen times when a user asks for a gap-limit scan, not in a loop, and
- * the simpler formulas are much easier to verify by eye.
+ * The curve is y^2 = x^3 + 7 over F_p, so a = 0 and the doubling formulas drop
+ * a term. Single point additions stay affine for readability; scalar
+ * multiplication runs in Jacobian coordinates (see below) and is cross-checked
+ * against the affine ladder by the self-test.
  *
  * `selfTest()` checks the arithmetic against curve identities that hold by
  * mathematics rather than by remembered constants, so it detects an
@@ -109,15 +108,92 @@ export const pointAdd = (a, b) => {
     return { x, y: mod(slope * (a.x - x) - a.y) };
 };
 
-/** Scalar multiplication by double-and-add. */
+/*
+ * Jacobian coordinates for scalar multiplication.
+ *
+ * An affine point operation costs a modular inverse, and an inverse costs a
+ * full modular exponentiation. Double-and-add over 256 bits in affine form
+ * therefore performed ~380 exponentiations per multiplication, which made a
+ * 200-address scan take ~14 s on the Electron main thread. In Jacobian form
+ * (x = X/Z^2, y = Y/Z^3) doubling and addition need no inverse at all; one
+ * inverse converts the result back.
+ *
+ * Formulas: dbl-2009-l and madd-2007-bl from the Explicit-Formulas Database,
+ * specialised to a = 0. Only public data is ever multiplied here, so the
+ * variable-time ladder leaks nothing worth protecting.
+ */
+
+const JACOBIAN_INFINITY = Object.freeze({ X: 1n, Y: 1n, Z: 0n });
+
+const toJacobian = (point) => (point === INFINITY ? JACOBIAN_INFINITY : { X: point.x, Y: point.y, Z: 1n });
+
+const fromJacobian = (point) => {
+    if (point.Z === 0n) return INFINITY;
+    const zInverse = inverse(point.Z);
+    const zInverse2 = mod(zInverse * zInverse);
+    return { x: mod(point.X * zInverse2), y: mod(point.Y * zInverse2 * zInverse) };
+};
+
+const jacobianDouble = ({ X, Y, Z }) => {
+    if (Z === 0n || Y === 0n) return JACOBIAN_INFINITY;
+    const A = mod(X * X);
+    const B = mod(Y * Y);
+    const C = mod(B * B);
+    const XB = X + B;
+    const D = mod(2n * (XB * XB - A - C));
+    const E = 3n * A;
+    const F = mod(E * E);
+    const X3 = mod(F - 2n * D);
+    return { X: X3, Y: mod(E * (D - X3) - 8n * C), Z: mod(2n * Y * Z) };
+};
+
+/** Adds an affine point `q` to a Jacobian point `p`. */
+const jacobianAddAffine = (p, q) => {
+    if (q === INFINITY) return p;
+    if (p.Z === 0n) return toJacobian(q);
+
+    const Z1Z1 = mod(p.Z * p.Z);
+    const U2 = mod(q.x * Z1Z1);
+    const S2 = mod(q.y * p.Z * Z1Z1);
+    const H = mod(U2 - p.X);
+    const r = mod(2n * (S2 - p.Y));
+
+    if (H === 0n) return r === 0n ? jacobianDouble(p) : JACOBIAN_INFINITY;
+
+    const HH = mod(H * H);
+    const I = 4n * HH;
+    const J = mod(H * I);
+    const V = mod(p.X * I);
+    const X3 = mod(r * r - J - 2n * V);
+    const ZH = p.Z + H;
+    return {
+        X: X3,
+        Y: mod(r * (V - X3) - 2n * p.Y * J),
+        Z: mod(ZH * ZH - Z1Z1 - HH),
+    };
+};
+
+/** Scalar multiplication, left-to-right double-and-add in Jacobian coordinates. */
 export const scalarMultiply = (scalar, point = G) => {
+    const k = mod(scalar, N);
+    if (k === 0n || point === INFINITY) return INFINITY;
+
+    let result = JACOBIAN_INFINITY;
+    for (let bit = BigInt(k.toString(2).length - 1); bit >= 0n; bit -= 1n) {
+        result = jacobianDouble(result);
+        if ((k >> bit) & 1n) result = jacobianAddAffine(result, point);
+    }
+    return fromJacobian(result);
+};
+
+/** The original affine ladder, kept as an independent cross-check for the self-test. */
+const scalarMultiplyAffine = (scalar, point = G) => {
     const k = mod(scalar, N);
     if (k === 0n || point === INFINITY) return INFINITY;
 
     let result = INFINITY;
     let addend = point;
     let remaining = k;
-
     while (remaining > 0n) {
         if (remaining & 1n) result = pointAdd(result, addend);
         addend = pointDouble(addend);
@@ -213,6 +289,11 @@ export const selfTest = () => {
     check('(n-1)G equals -G', pointEquals(scalarMultiply(N - 1n), pointNegate(G)));
     check('(n-1)G + G is infinity', pointAdd(scalarMultiply(N - 1n), G) === INFINITY);
     check('compression round-trips', pointEquals(decompressPoint(compressPoint(g3)), g3));
+
+    // The fast Jacobian ladder must agree with the plain affine one on an
+    // arbitrary full-width scalar — two independent formula sets, one answer.
+    const probe = 0x1f3a5c7e9b2d4f6081a3c5e7092b4d6f8e0c2a4b6d8f0e1c3a5b7d9f1e3c5a7bn;
+    check('Jacobian and affine multiplication agree', pointEquals(scalarMultiply(probe), scalarMultiplyAffine(probe)));
 
     // An x with no square root must be rejected rather than silently accepted.
     let rejectedOffCurve = false;

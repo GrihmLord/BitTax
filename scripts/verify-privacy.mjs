@@ -1,13 +1,13 @@
 /**
- * verify_privacy.mjs
+ * verify-privacy.mjs
  * Smoke check for the privacy heuristics. Exits non-zero on failure.
  *
  * The exhaustive suite lives in `src/core/__tests__/privacy.test.js`.
  */
 
-import { analyzeCoinJoin, analyzeLightningChannel } from './src/core/privacy.js';
+import { analyzeCoinJoin, analyzeLightningChannel } from '../src/core/privacy.js';
 
-const P2WSH = 'bc1qrp33g0q5c5txsp9dysjy386pxqry4y6k9k0q5k2k0q5k2k0q5k2k0q5k2k';
+const P2WSH = 'bc1qqv9pzxqlyckngw6zf9g9whn9d3eh4qvg37tfmf9tk2uup37w6hwqhqtcjj';
 const P2WPKH = 'bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4';
 
 const cases = [

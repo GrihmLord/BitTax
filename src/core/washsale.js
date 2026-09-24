@@ -1,136 +1,120 @@
 /**
  * washsale.js
- * IRS-style wash sale treatment (26 U.S.C. 1091 / Pub 550).
+ * IRS-style wash sale treatment (26 U.S.C. 1091, 1223(3); Treas. Reg. 1.1091-1;
+ * Pub 550).
  *
  * A loss is disallowed to the extent substantially identical property was
- * acquired within 30 days before or after the sale — a 61 day window. The
- * disallowed loss is not deleted: it is added to the cost basis of the
- * replacement lot, and the replacement inherits the holding period of the
- * position that was washed.
+ * acquired within 30 days before or after the sale — a 61 day window counted
+ * in calendar days. The disallowed loss is not deleted: it is added to the
+ * cost basis of the replacement units, and those units inherit the holding
+ * period of the position that was washed.
+ *
+ * Matching rules implemented here:
+ *   - Replacements are matched in the order they were acquired (Reg. 1.1091-1(c)).
+ *   - Only the replacement units carry the adjustment. A partial match splits
+ *     the replacement lot into a separate tranche rather than smearing the
+ *     adjustment across units that replaced nothing.
+ *   - Each unit can act as a replacement once (Reg. 1.1091-1(e)).
+ *   - Other units from the purchase that was sold are not replacements for it
+ *     (Rev. Rul. 56-602).
+ *   - A unit acquired inside the window but already sold before the loss sale
+ *     is no longer held and does not count.
+ *
+ * The engine calls `washDisposal` at the moment each loss is realised, in
+ * chronological order. A replacement's adjusted basis is therefore in place
+ * before it is itself sold, so a loss on the replacement is tested in turn —
+ * cascades are handled by construction instead of by a second pass.
  *
  * NOTE ON APPLICABILITY: section 1091 is written for "stocks or securities".
  * Digital assets are generally treated as property rather than securities, so
  * this treatment is conservative and optional. It is applied only when the
- * caller asks for it, and every adjustment is reported line by line so the
- * effect can be shown to a preparer.
+ * caller asks for it, and every adjustment is reported line by line.
  */
 
 import { allocate } from './money.js';
 import { minBigInt } from './decimal.js';
+import { tackedHoldingStart } from './holdingPeriod.js';
 
 export const WASH_SALE_WINDOW_DAYS = 30;
-const DAY_MS = 86400000;
 
-/**
- * Indexes disposals by the lot they were drawn from, so a basis adjustment
- * landing on an already-liquidated lot can be pushed onto the sales that
- * consumed it instead of vanishing.
- */
-const indexDisposalsByLot = (disposals) => {
-    const index = new Map();
-    for (const disposal of disposals) {
-        const list = index.get(disposal.lotId);
-        if (list) list.push(disposal);
-        else index.set(disposal.lotId, [disposal]);
+/** Index of the first lot acquired on or after `day`. Lots are in acquisition order. */
+const lowerBound = (lots, day) => {
+    let low = 0;
+    let high = lots.length;
+    while (low < high) {
+        const mid = (low + high) >> 1;
+        if (lots[mid].acquiredDay < day) low = mid + 1;
+        else high = mid;
     }
-    return index;
+    return low;
 };
 
 /**
- * Applies a basis increase to a replacement lot, splitting it between the
- * units still open and the units that have already been sold on.
+ * Every lot the engine will ever hold, in acquisition order, including ones
+ * not yet acquired at the point in the timeline being processed. Future
+ * purchases inside the window are valid replacements, so they must be visible.
  */
-const creditReplacementBasis = (lot, adjustmentCents, disposalsByLot) => {
-    lot.washAdjustmentCents += adjustmentCents;
-
-    const openShare = lot.originalUnits === 0n
-        ? adjustmentCents
-        : allocate(adjustmentCents, lot.units, lot.originalUnits);
-    lot.basisCents += openShare;
-
-    let cascade = adjustmentCents - openShare;
-    if (cascade === 0n) return;
-
-    const priorSales = disposalsByLot.get(lot.id) || [];
-    const soldUnits = priorSales.reduce((sum, sale) => sum + sale.units, 0n);
-    if (soldUnits === 0n) {
-        lot.basisCents += cascade;
-        return;
+export class ReplacementIndex {
+    /** @param {Array<object>} lots - in acquisition order */
+    constructor(lots) {
+        this.lots = [...lots];
     }
 
-    priorSales.forEach((sale, index) => {
-        const share = index === priorSales.length - 1 ? cascade : allocate(adjustmentCents - openShare, sale.units, soldUnits);
-        sale.basisCents += share;
-        sale.cascadedAdjustmentCents = (sale.cascadedAdjustmentCents || 0n) + share;
-        cascade -= share;
-    });
-};
+    /** Positions of lots acquired within `windowDays` of `day`, inclusive. */
+    windowStart(day, windowDays) {
+        return lowerBound(this.lots, day - windowDays);
+    }
+}
 
 /**
- * Finds acquisitions eligible to absorb a loss: inside the 61 day window,
- * not the lot being sold, and not already spoken for by an earlier wash.
- */
-const eligibleReplacements = (lots, disposal, remainingUnits, windowMs) =>
-    lots.filter((lot) =>
-        lot.id !== disposal.lotId
-        && lot.acquiredAt !== undefined
-        && Math.abs(lot.acquiredAt - disposal.soldAt) <= windowMs
-        && (remainingUnits.get(lot.id) || 0n) > 0n);
-
-/**
- * Matches one loss disposal against replacement lots and records the
+ * Tests one loss disposal line against the replacement index, and records the
  * disallowance on both sides.
+ *
+ * @param {object} disposal - a disposal line with a negative raw gain
+ * @param {object} soldLot - the lot the line was drawn from
+ * @param {ReplacementIndex} index
+ * @param {object} hooks
+ * @param {(lot: object, units: bigint) => object} hooks.split - carves a tranche out of a lot and places it in inventory
+ * @param {(lot: object) => void} hooks.adjusted - called after a lot's basis changes
+ * @param {number} [windowDays]
  */
-const washOneDisposal = (disposal, lots, remainingUnits, disposalsByLot, windowMs) => {
+export const washDisposal = (disposal, soldLot, index, hooks, windowDays = WASH_SALE_WINDOW_DAYS) => {
     const totalLoss = -disposal.rawGainCents;
+    if (totalLoss <= 0n || !soldLot) return;
+
+    const soldDay = disposal.soldDay;
     let unitsToMatch = disposal.units;
 
-    for (const lot of eligibleReplacements(lots, disposal, remainingUnits, windowMs)) {
-        if (unitsToMatch <= 0n) break;
+    for (let i = index.windowStart(soldDay, windowDays); i < index.lots.length && unitsToMatch > 0n; i += 1) {
+        const candidate = index.lots[i];
+        if (candidate.acquiredDay > soldDay + windowDays) break;
+        if (candidate.originId === soldLot.originId) continue;
+        if (candidate.replacementFor !== null || candidate.units <= 0n) continue;
 
-        const available = remainingUnits.get(lot.id);
-        const matched = minBigInt(unitsToMatch, available);
+        const matched = minBigInt(unitsToMatch, candidate.units);
         // Cap the running total: rounding each lot's share independently could
         // otherwise disallow a cent more than the loss actually was.
         const headroom = totalLoss - disposal.disallowedLossCents;
         const disallowed = minBigInt(allocate(totalLoss, matched, disposal.units), headroom);
-        if (disallowed <= 0n) continue;
+        if (disallowed <= 0n) break;
+
+        let replacement = candidate;
+        if (matched < candidate.units) {
+            replacement = hooks.split(candidate, matched);
+            // The tranche sits directly after its parent, and is skipped by the loop.
+            index.lots.splice(i + 1, 0, replacement);
+            i += 1;
+        }
+
+        replacement.replacementFor = disposal.id;
+        replacement.basisCents += disallowed;
+        replacement.washAdjustmentCents += disallowed;
+        replacement.holdingStartAt = tackedHoldingStart(replacement.acquiredAt, disposal.holdingStartAt, disposal.soldAt);
+        hooks.adjusted(replacement);
 
         disposal.disallowedLossCents += disallowed;
         disposal.washSale = true;
-        disposal.replacementLotIds.push(lot.id);
-
-        creditReplacementBasis(lot, disallowed, disposalsByLot);
-        lot.holdingStartAt = Math.min(lot.holdingStartAt, disposal.holdingStartAt);
-
-        remainingUnits.set(lot.id, available - matched);
+        disposal.replacementLotIds.push(replacement.id);
         unitsToMatch -= matched;
     }
-};
-
-/**
- * Applies wash sale treatment across a completed set of disposals.
- * Mutates the disposals and lots in place and returns the total disallowed.
- *
- * @param {Array<object>} disposals - every disposal produced by the engine
- * @param {Array<object>} lots - every lot created, open or exhausted
- * @param {{windowDays?: number}} [options]
- * @returns {{disallowedCents: bigint, adjustedCount: number}}
- */
-export const applyWashSales = (disposals, lots, options = {}) => {
-    const windowMs = (options.windowDays ?? WASH_SALE_WINDOW_DAYS) * DAY_MS;
-    const disposalsByLot = indexDisposalsByLot(disposals);
-    const remainingUnits = new Map(lots.map((lot) => [lot.id, lot.originalUnits]));
-
-    const losses = disposals
-        .filter((disposal) => disposal.rawGainCents < 0n)
-        .sort((a, b) => a.soldAt - b.soldAt || a.sequence - b.sequence);
-
-    for (const disposal of losses) {
-        washOneDisposal(disposal, lots, remainingUnits, disposalsByLot, windowMs);
-    }
-
-    const disallowedCents = disposals.reduce((sum, disposal) => sum + disposal.disallowedLossCents, 0n);
-    const adjustedCount = disposals.filter((disposal) => disposal.washSale).length;
-    return { disallowedCents, adjustedCount };
 };

@@ -4,8 +4,13 @@
  *
  * These figures are inflation-adjusted every year by an IRS revenue procedure.
  * Each year carries its `source` and a `verified` flag so a stale table is
- * visible rather than silent: the application refuses to present an unverified
- * table as a filing figure, and says which revenue procedure to check.
+ * visible rather than silent: the application flags an unverified table and
+ * says which revenue procedure to check.
+ *
+ * `verified: true` means every figure below was cross-checked against the
+ * published revenue procedure and is pinned by `__tests__/taxTables.test.js`,
+ * so an accidental edit fails the build. Section 1(j) brackets for 2026 onward
+ * reflect Pub. L. 119-21 (2025), which made the TCJA rate schedule permanent.
  *
  * Limits are the TOP of each bracket in whole dollars of taxable income.
  * Rates are basis points, so all arithmetic stays on integers.
@@ -42,7 +47,7 @@ export const TAX_YEARS = Object.freeze({
     2024: {
         year: 2024,
         source: 'IRS Rev. Proc. 2023-34',
-        verified: false,
+        verified: true,
         ordinary: {
             [FILING_STATUS.SINGLE]: ordinary([11600, 47150, 100525, 191950, 243725, 609350]),
             [FILING_STATUS.MARRIED_JOINT]: ordinary([23200, 94300, 201050, 383900, 487450, 731200]),
@@ -65,7 +70,7 @@ export const TAX_YEARS = Object.freeze({
     2025: {
         year: 2025,
         source: 'IRS Rev. Proc. 2024-40',
-        verified: false,
+        verified: true,
         ordinary: {
             [FILING_STATUS.SINGLE]: ordinary([11925, 48475, 103350, 197300, 250525, 626350]),
             [FILING_STATUS.MARRIED_JOINT]: ordinary([23850, 96950, 206700, 394600, 501050, 751600]),
@@ -85,19 +90,43 @@ export const TAX_YEARS = Object.freeze({
             [FILING_STATUS.HEAD_OF_HOUSEHOLD]: 200000,
         },
     },
+    2026: {
+        year: 2026,
+        source: 'IRS Rev. Proc. 2025-32',
+        verified: true,
+        ordinary: {
+            [FILING_STATUS.SINGLE]: ordinary([12400, 50400, 105700, 201775, 256225, 640600]),
+            [FILING_STATUS.MARRIED_JOINT]: ordinary([24800, 100800, 211400, 403550, 512450, 768700]),
+            [FILING_STATUS.MARRIED_SEPARATE]: ordinary([12400, 50400, 105700, 201775, 256225, 384350]),
+            [FILING_STATUS.HEAD_OF_HOUSEHOLD]: ordinary([17700, 67450, 105700, 201750, 256200, 640600]),
+        },
+        longTerm: {
+            [FILING_STATUS.SINGLE]: longTerm([49450, 545500]),
+            [FILING_STATUS.MARRIED_JOINT]: longTerm([98900, 613700]),
+            [FILING_STATUS.MARRIED_SEPARATE]: longTerm([49450, 306850]),
+            [FILING_STATUS.HEAD_OF_HOUSEHOLD]: longTerm([66200, 579600]),
+        },
+        niitThresholdDollars: {
+            [FILING_STATUS.SINGLE]: 200000,
+            [FILING_STATUS.MARRIED_JOINT]: 250000,
+            [FILING_STATUS.MARRIED_SEPARATE]: 125000,
+            [FILING_STATUS.HEAD_OF_HOUSEHOLD]: 200000,
+        },
+    },
 });
 
 /** Net investment income tax, unindexed since enactment. */
 export const NIIT_RATE_BP = 380;
 
-export const SUPPORTED_TAX_YEARS = Object.freeze(Object.keys(TAX_YEARS).map(Number).sort());
+export const SUPPORTED_TAX_YEARS = Object.freeze(Object.keys(TAX_YEARS).map(Number).sort((a, b) => a - b));
 
 /**
- * Pinned rather than "the newest table available": bumping this would silently
- * change every figure the tool has ever shown a user. The year is a visible,
- * explicit choice in the UI, and callers that care should pass it.
+ * The year a new user starts on: the most recent year whose return is filed
+ * in the current season. Pinned rather than "the newest table available" so a
+ * table added for planning never becomes the default by accident. The year is
+ * a visible, persisted choice in the UI, and callers that care should pass it.
  */
-export const DEFAULT_TAX_YEAR = 2024;
+export const DEFAULT_TAX_YEAR = 2025;
 
 /**
  * @param {number} year
